@@ -165,6 +165,35 @@ def yellow(t: str) -> str: return _c(t, "33")
 def red(t: str) -> str: return _c(t, "31")
 
 
+# ---------- resume-command extras ----------
+#
+# Flags each agent CLI wants appended to the resume command. Claude Code
+# needs `--dangerously-skip-permissions` so a resumed session doesn't stall
+# on the tool-permission prompt for every previously-approved tool call.
+# Codex doesn't have an equivalent switch; leave empty.
+
+_CLAUDE_RESUME_FLAGS: Tuple[str, ...] = ("--dangerously-skip-permissions",)
+_CODEX_RESUME_FLAGS: Tuple[str, ...] = ()
+
+
+# ---------- clipboard ----------
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Best-effort clipboard write. macOS uses pbcopy; Linux tries xclip then
+    xsel. Returns True on success, False if no supported utility is on PATH."""
+    for cmd in (["pbcopy"],
+                ["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"]):
+        try:
+            proc = subprocess.run(cmd, input=text.encode("utf-8"),
+                                  timeout=2, check=False)
+            if proc.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            continue
+    return False
+
+
 # ---------- path / slug ----------
 
 def slug_for(path: str) -> str:
@@ -426,35 +455,36 @@ def emit_resume(project_dir: Path, node: dict, by_uuid: Dict[str, Tuple[dict, st
     # Native shortcut: when this node is the leafUuid resolution of some session
     # that already exists on disk, stock `claude --resume <that-session>` lands
     # exactly here. No need to write a synthetic file.
-    native_sid = node.get("native_session_id") if isinstance(node, dict) else None
-    if native_sid:
-        cmd_str = f"claude --resume {native_sid}"
-        print()
-        print(green(f"  ✓ native resume target — using original session, no file written"))
-        print(bold(f"  $ {cmd_str}"))
-        print()
-        if exec_after:
-            print(dim("  → exec…"))
-            try:
-                os.execvp("claude", ["claude", "--resume", native_sid])
-            except FileNotFoundError:
-                print(red("  ! `claude` not found — install Claude Code CLI and put it on PATH"))
-                sys.exit(2)
-        return
+    def _cmd_str(sid: str) -> str:
+        return " ".join(["claude", "--resume", sid, *_CLAUDE_RESUME_FLAGS])
 
-    new_sid, chain_len, new_path = write_synthetic_session(project_dir, node["uuid"], by_uuid)
-    cmd_str = f"claude --resume {new_sid}"
-    print()
-    print(green(f"  ✓ synthesized session ({chain_len}-link chain) → {new_path.name}"))
-    print(bold(f"  $ {cmd_str}"))
-    print()
-    if exec_after:
-        print(dim("  → exec…"))
+    def _exec(sid: str) -> None:
+        argv = ["claude", "--resume", sid, *_CLAUDE_RESUME_FLAGS]
         try:
-            os.execvp("claude", ["claude", "--resume", new_sid])
+            os.execvp("claude", argv)
         except FileNotFoundError:
             print(red("  ! `claude` not found — install Claude Code CLI and put it on PATH"))
             sys.exit(2)
+
+    native_sid = node.get("native_session_id") if isinstance(node, dict) else None
+    if native_sid:
+        print()
+        print(green(f"  ✓ native resume target — using original session, no file written"))
+        print(bold(f"  $ {_cmd_str(native_sid)}"))
+        print()
+        if exec_after:
+            print(dim("  → exec…"))
+            _exec(native_sid)
+        return
+
+    new_sid, chain_len, new_path = write_synthetic_session(project_dir, node["uuid"], by_uuid)
+    print()
+    print(green(f"  ✓ synthesized session ({chain_len}-link chain) → {new_path.name}"))
+    print(bold(f"  $ {_cmd_str(new_sid)}"))
+    print()
+    if exec_after:
+        print(dim("  → exec…"))
+        _exec(new_sid)
 
 
 # ---------- codex (~/.codex/sessions/) ----------
@@ -737,35 +767,36 @@ def _codex_write_synthetic(target: dict) -> Tuple[str, int, Path]:
 
 
 def _codex_emit_resume(node: dict, exec_after: bool) -> None:
-    native_sid = node.get("native_session_id") if isinstance(node, dict) else None
-    if native_sid:
-        cmd_str = f"codex resume {native_sid}"
-        print()
-        print(green(f"  ✓ native resume target — using original session, no file written"))
-        print(bold(f"  $ {cmd_str}"))
-        print()
-        if exec_after:
-            print(dim("  → exec…"))
-            try:
-                os.execvp("codex", ["codex", "resume", native_sid])
-            except FileNotFoundError:
-                print(red("  ! `codex` not found — install OpenAI Codex CLI and put it on PATH"))
-                sys.exit(2)
-        return
+    def _cmd_str(sid: str) -> str:
+        return " ".join(["codex", "resume", sid, *_CODEX_RESUME_FLAGS])
 
-    new_sid, chain_len, new_path = _codex_write_synthetic(node)
-    cmd_str = f"codex resume {new_sid}"
-    print()
-    print(green(f"  ✓ synthesized rollout ({chain_len}-line chain) → {new_path.name}"))
-    print(bold(f"  $ {cmd_str}"))
-    print()
-    if exec_after:
-        print(dim("  → exec…"))
+    def _exec(sid: str) -> None:
+        argv = ["codex", "resume", sid, *_CODEX_RESUME_FLAGS]
         try:
-            os.execvp("codex", ["codex", "resume", new_sid])
+            os.execvp("codex", argv)
         except FileNotFoundError:
             print(red("  ! `codex` not found — install OpenAI Codex CLI and put it on PATH"))
             sys.exit(2)
+
+    native_sid = node.get("native_session_id") if isinstance(node, dict) else None
+    if native_sid:
+        print()
+        print(green(f"  ✓ native resume target — using original session, no file written"))
+        print(bold(f"  $ {_cmd_str(native_sid)}"))
+        print()
+        if exec_after:
+            print(dim("  → exec…"))
+            _exec(native_sid)
+        return
+
+    new_sid, chain_len, new_path = _codex_write_synthetic(node)
+    print()
+    print(green(f"  ✓ synthesized rollout ({chain_len}-line chain) → {new_path.name}"))
+    print(bold(f"  $ {_cmd_str(new_sid)}"))
+    print()
+    if exec_after:
+        print(dim("  → exec…"))
+        _exec(new_sid)
 
 
 # ---------- driver dispatch ----------
@@ -774,6 +805,11 @@ class ClaudeDriver:
     """Wraps the Claude-Code data model so command code can stay tool-agnostic."""
     name = "claude"
     resume_verb = "claude --resume"
+    resume_extra_flags: Tuple[str, ...] = _CLAUDE_RESUME_FLAGS
+
+    def build_resume_cmd(self, sid: str) -> str:
+        parts = ["claude", "--resume", sid, *self.resume_extra_flags]
+        return " ".join(parts)
 
     def display_project(self, cwd: str) -> Path:
         return project_dir_for(cwd)
@@ -818,8 +854,9 @@ class ClaudeDriver:
         return new_sid, new_path, chain_len
 
     def exec_resume(self, sid: str) -> None:
+        argv = ["claude", "--resume", sid, *self.resume_extra_flags]
         try:
-            os.execvp("claude", ["claude", "--resume", sid])
+            os.execvp("claude", argv)
         except FileNotFoundError:
             print(red("  ! `claude` not found — install Claude Code CLI and put it on PATH"))
             sys.exit(2)
@@ -831,6 +868,11 @@ class ClaudeDriver:
 class CodexDriver:
     name = "codex"
     resume_verb = "codex resume"
+    resume_extra_flags: Tuple[str, ...] = _CODEX_RESUME_FLAGS
+
+    def build_resume_cmd(self, sid: str) -> str:
+        parts = ["codex", "resume", sid, *self.resume_extra_flags]
+        return " ".join(parts)
 
     def display_project(self, cwd: str) -> Path:
         # Codex doesn't have a per-cwd directory — show the actual cwd.
@@ -869,8 +911,9 @@ class CodexDriver:
         return new_sid, new_path, chain_len
 
     def exec_resume(self, sid: str) -> None:
+        argv = ["codex", "resume", sid, *self.resume_extra_flags]
         try:
-            os.execvp("codex", ["codex", "resume", sid])
+            os.execvp("codex", argv)
         except FileNotFoundError:
             print(red("  ! `codex` not found — install OpenAI Codex CLI and put it on PATH"))
             sys.exit(2)
@@ -1399,12 +1442,14 @@ def _compute_browse_items(state: dict, all_nodes: Dict[str, dict]) -> List:
 
 def _render_node_detail(node: dict, driver: Any, native_set: set,
                         project_dir: Path,
-                        revealed: Optional[Tuple[str, Optional[Path], int]]
-                        ) -> None:
+                        revealed: Optional[Tuple[str, Optional[Path], int]],
+                        clipboard_state: Optional[str]) -> None:
     """Print the full detail view for a node — both halves of the turn plus
     the resume command. `revealed` is None before the user has confirmed
     they want to see the concrete command; once set it's
     (sid, file_path_or_None, chain_length) and the placeholder is replaced.
+    `clipboard_state` is 'ok' after a successful copy, 'fail' if we tried
+    and no pbcopy/xclip/xsel was available, or None before any attempt.
     Runs inside the alternate screen buffer."""
     cols = shutil.get_terminal_size((140, 24)).columns
     rule_w = min(cols, 100)
@@ -1440,9 +1485,10 @@ def _render_node_detail(node: dict, driver: Any, native_set: set,
     print()
 
     print(bold("── resume ") + dim("─" * max(0, rule_w - 11)))
+    concrete_sid: Optional[str] = None
     if revealed is not None:
-        sid, file_path, chain_len = revealed
-        cmd = f"{driver.resume_verb} {sid}"
+        concrete_sid, file_path, chain_len = revealed
+        cmd = driver.build_resume_cmd(concrete_sid)
         print(f"  {bold('$')} {green(cmd)}")
         if file_path is None:
             print(dim("  native target — no synthetic file written"))
@@ -1451,7 +1497,8 @@ def _render_node_detail(node: dict, driver: Any, native_set: set,
                       f"({chain_len}-line chain)"))
         hint = "⏎ launch agent now · ← / ⎋ back to browser · ^C quit"
     elif native_sid:
-        cmd = f"{driver.resume_verb} {native_sid}"
+        concrete_sid = native_sid
+        cmd = driver.build_resume_cmd(native_sid)
         print(f"  {bold('$')} {green(cmd)}")
         print(dim("  native target — stock `--resume` already lands here, "
                   "no synthetic file needed"))
@@ -1461,8 +1508,15 @@ def _render_node_detail(node: dict, driver: Any, native_set: set,
                   "synthesize a fresh"))
         print(dim("  session file and reveal the exact resume command:"))
         print()
-        print(f"  {bold('$')} {driver.resume_verb} {dim('<new-session-id>')}")
+        placeholder_cmd = driver.build_resume_cmd("<new-session-id>")
+        print(f"  {bold('$')} {dim(placeholder_cmd)}")
         hint = "⏎ reveal command · ← / ⎋ back to browser · ^C quit"
+
+    if concrete_sid is not None:
+        if clipboard_state == "ok":
+            print(dim("  ✓ copied to clipboard"))
+        elif clipboard_state == "fail":
+            print(dim("  (clipboard: pbcopy/xclip/xsel not on PATH — command shown above)"))
     print()
     print(dim(f"  {hint}"))
 
@@ -1474,23 +1528,45 @@ def _show_node_detail(node: dict, raw: "_RawInput", driver: Any,
     """Detail screen for one picked node. Two-stage Enter:
 
       1. Non-native node, not revealed yet: ⏎ synthesizes the fresh session
-         file and updates the on-screen command from the `<new-session-id>`
-         placeholder to the real session id. Stays on screen.
+         file, updates the placeholder in the on-screen command with the
+         real session id, and copies the full command (including
+         `--dangerously-skip-permissions` for Claude) to the clipboard.
+         Stays on screen.
       2. Already revealed (or native): ⏎ execs the agent CLI on that sid.
 
       When `auto_exec` is True (top-level `-x` or `[browser] auto_exec`),
-      the two stages fold into one — the first ⏎ both synthesizes and execs.
+      the two stages fold into one — the first ⏎ synthesizes, copies, and
+      execs.
 
     Returns BACK to go back to the browser, or None on Ctrl+C. Successful
     launch never returns (os.execvp replaces the process)."""
     revealed: Optional[Tuple[str, Optional[Path], int]] = None
+    native_sid = node.get("native_session_id")
+    copied_for_sid: Optional[str] = None
+    clipboard_state: Optional[str] = None
+
+    def _copy_if_new(sid: str) -> None:
+        nonlocal copied_for_sid, clipboard_state
+        if copied_for_sid == sid:
+            return
+        ok = _copy_to_clipboard(driver.build_resume_cmd(sid))
+        copied_for_sid = sid
+        clipboard_state = "ok" if ok else "fail"
+
+    # For native nodes the command is concrete from the first render — copy
+    # it immediately so the user sees "✓ copied to clipboard" without an
+    # extra keystroke.
+    if native_sid:
+        _copy_if_new(native_sid)
+
     sys.stdout.write("\x1b[?1049h\x1b[H\x1b[2J")
     sys.stdout.flush()
     try:
         while True:
             sys.stdout.write("\x1b[H\x1b[2J")
             sys.stdout.flush()
-            _render_node_detail(node, driver, native_set, project_dir, revealed)
+            _render_node_detail(node, driver, native_set, project_dir,
+                                revealed, clipboard_state)
             try:
                 key = raw.read_key()
             except KeyboardInterrupt:
@@ -1498,18 +1574,17 @@ def _show_node_detail(node: dict, raw: "_RawInput", driver: Any,
             if key in ("left", "esc", "backspace", "q", "Q"):
                 return BACK
             if key == "enter":
-                native_sid = node.get("native_session_id")
                 if revealed is None and not native_sid:
-                    # First ⏎ on an abandoned-branch node: synthesize now.
+                    # First ⏎ on an abandoned-branch node: synthesize now,
+                    # copy the freshly-concrete command, and either stay on
+                    # screen (default) or launch immediately (auto_exec).
                     revealed = driver.prepare_resume(project_dir, node, raw_data)
+                    _copy_if_new(revealed[0])
                     if auto_exec:
-                        # Single-step mode: launch immediately. Leave alt
-                        # screen first so the new process inherits a clean tty.
                         sys.stdout.write("\x1b[?1049l")
                         sys.stdout.flush()
                         driver.exec_resume(revealed[0])
                         return None  # exec failed (e.g. FileNotFoundError)
-                    # Stay on screen — next render shows the real command.
                     continue
                 # Native target, or non-native that has already been
                 # revealed: this ⏎ is the launch.
@@ -1819,7 +1894,7 @@ def cmd_resume(args) -> None:
         # session id / file path without calling exec.
         native_sid = node.get("native_session_id") if isinstance(node, dict) else None
         if native_sid:
-            cmd_str = f"{driver.resume_verb} {native_sid}"
+            cmd_str = driver.build_resume_cmd(native_sid)
             _emit_json({
                 "tool": driver.name,
                 "target_uuid": target,
@@ -1834,7 +1909,7 @@ def cmd_resume(args) -> None:
             new_sid, chain_len, new_path = write_synthetic_session(pd, target, raw)
         else:
             new_sid, chain_len, new_path = _codex_write_synthetic(node)
-        cmd_str = f"{driver.resume_verb} {new_sid}"
+        cmd_str = driver.build_resume_cmd(new_sid)
         _emit_json({
             "tool": driver.name,
             "target_uuid": target,
