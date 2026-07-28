@@ -137,6 +137,15 @@ CLAUDE_PROJECTS_DIR = Path(
                                default="~/.claude/projects"))
 ).expanduser()
 
+# Prompts typed *while* Claude is working are folded into the running turn and never written to
+# the session jsonl — so a tree built from transcripts alone silently drops them. They do survive
+# in the prompt history, with a session id and a timestamp, which is enough to put them back.
+CLAUDE_HISTORY_FILE = Path(
+    os.environ.get("CLAUDE_HISTORY_FILE")
+    or os.path.expanduser(_cfg("paths", "claude_history_file",
+                               default="~/.claude/history.jsonl"))
+).expanduser()
+
 
 # Sentinel returned by pickers when the user wants to back up one layer.
 # `None` keeps meaning "quit the whole interactive flow".
@@ -352,6 +361,96 @@ def build_nodes(
             cur = m[0].get("parentUuid")
 
     return nodes, native_reachable
+
+
+def load_queued_prompts(session_ids: set) -> Dict[str, List[dict]]:
+    """Prompts from ~/.claude/history.jsonl for the given sessions, oldest first.
+
+    Returns sid -> [{"text", "ms"}]. These are *all* prompts the user typed, including the ones
+    that reached the transcript; the caller drops the ones it already has as nodes.
+    """
+    out: Dict[str, List[dict]] = {}
+    if not session_ids or not CLAUDE_HISTORY_FILE.exists():
+        return out
+    try:
+        with CLAUDE_HISTORY_FILE.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                sid = d.get("sessionId")
+                if sid not in session_ids:
+                    continue
+                text = (d.get("display") or "").strip()
+                if not text:
+                    continue
+                try:
+                    ms = float(d.get("timestamp") or 0)
+                except (TypeError, ValueError):
+                    ms = 0.0
+                out.setdefault(sid, []).append({"text": text, "ms": ms})
+    except OSError:
+        return {}
+    for sid in out:
+        out[sid].sort(key=lambda e: e["ms"])
+    return out
+
+
+def _ts_ms(ts: str) -> float:
+    """ISO8601 (with or without fractional seconds, trailing Z) -> epoch ms."""
+    if not ts:
+        return 0.0
+    t = ts.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(t).timestamp() * 1000
+    except ValueError:
+        return 0.0
+
+
+def attach_queued_prompts(nodes: Dict[str, dict]) -> int:
+    """Hang each mid-turn prompt off the turn that was running when it was typed.
+
+    They are annotations, not nodes: no uuid exists for them in any transcript, so `--resume`
+    cannot land on one, and inventing a child would fabricate a branch that never happened.
+    Returns how many were recovered.
+    """
+    sessions = {n.get("session_id") for n in nodes.values() if n.get("session_id")}
+    history = load_queued_prompts(sessions)
+    if not history:
+        return 0
+
+    by_session: Dict[str, List[dict]] = {}
+    for n in nodes.values():
+        sid = n.get("session_id")
+        if sid:
+            by_session.setdefault(sid, []).append(n)
+    for sid in by_session:
+        by_session[sid].sort(key=lambda n: _ts_ms(n.get("timestamp") or ""))
+
+    recovered = 0
+    for sid, entries in history.items():
+        owned = by_session.get(sid) or []
+        if not owned:
+            continue
+        known = {(n.get("text") or "").strip() for n in owned}
+        for e in entries:
+            if e["text"] in known:
+                continue                       # this one did reach the transcript
+            owner = None
+            for n in owned:                    # the last turn that had already started
+                if _ts_ms(n.get("timestamp") or "") <= e["ms"]:
+                    owner = n
+                else:
+                    break
+            if owner is None:
+                continue                       # typed before this project's first recorded turn
+            owner.setdefault("queued", []).append(e)
+            recovered += 1
+    return recovered
 
 
 # ---------- resume (synthetic jsonl) ----------
@@ -823,6 +922,7 @@ class ClaudeDriver:
             sys.exit(2)
         by_uuid, session_leaf = load_project(pd)
         nodes, native = build_nodes(by_uuid, session_leaf)
+        attach_queued_prompts(nodes)
         if scope_root:
             matches = [u for u in nodes if u.startswith(scope_root)]
             if not matches:
@@ -1070,10 +1170,13 @@ def render_tree(roots: List[str], nodes: Dict[str, dict], native_reachable: set,
         nat = purple("★") if uid in native_reachable else " "
         leaf = green("·") if not n["children"] else " "
         text = re.sub(r"\s+", " ", n["text"]).strip()
-        head_len = len(prefix) + len(glyph) + 1 + 11 + 1 + 8 + 1 + 1 + 1
+        nq = len(n.get("queued") or ())
+        head_len = len(prefix) + len(glyph) + 1 + 11 + 1 + 8 + 1 + 1 + 1 + (3 if nq else 0)
         avail = max(20, cols - head_len - 1)
         text = _truncate_w(text, avail)  # display-width aware (handles CJK), then color
         text = _highlight(text, highlight)
+        if nq:
+            text = cyan(f"+{nq}") + " " + text
         _emit(f"{prefix}{glyph}{nat} {ts} {uid_short} {leaf} {text}", out)
 
     # Iterative DFS. Each stack entry is a node-to-process plus its visual
@@ -1337,6 +1440,9 @@ def _browse_render(state: dict, items: List[dict], all_nodes: Dict[str, dict],
             nat = purple("★") if n["uuid"] in native else " "
             leaf = green("·") if not n["children"] else " "
             text = re.sub(r"\s+", " ", n["text"]).strip()
+            nq = len(n.get("queued") or ())
+            if nq:
+                text = cyan(f"+{nq}") + " " + text
             text_w = max(15, cols - len(line_entry["prefix"]) - len(line_entry["glyph"]) - 30)
             text = _truncate_w(text, text_w)
             text = _highlight(text, search)
@@ -1399,6 +1505,8 @@ def _compute_browse_items(state: dict, all_nodes: Dict[str, dict]) -> List:
         if not search:
             return True
         if search in (n["text"] or "").lower():
+            return True
+        if any(search in (q.get("text") or "").lower() for q in (n.get("queued") or ())):
             return True
         if scope == "all" and search in (n.get("answer_text") or "").lower():
             return True
@@ -1475,6 +1583,17 @@ def _render_node_detail(node: dict, driver: Any, native_set: set,
 
     print(bold("── user prompt ") + dim("─" * max(0, rule_w - 16)))
     print(prompt if prompt else dim("(empty)"))
+
+    # Follow-ups typed while this turn was still running. They shaped the answer below even though
+    # no transcript record exists for them, so showing the turn without them misrepresents it.
+    queued = node.get("queued") or []
+    if queued:
+        label = f"── follow-ups typed during this turn ({len(queued)}) "
+        print()
+        print(bold(label) + dim("─" * max(0, rule_w - len(label))))
+        for q in queued:
+            when = _format_time(datetime.fromtimestamp(q["ms"] / 1000).isoformat()) if q.get("ms") else ""
+            print(cyan("  + ") + (dim(when + "  ") if when else "") + q["text"])
     print()
 
     print(bold("── assistant reply ") + dim("─" * max(0, rule_w - 20)))
