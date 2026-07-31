@@ -22,17 +22,18 @@ that file via its native `--resume` and lands exactly at your target.
 ## Install
 
 ```bash
-# from a clone of the repo, install the package
-pip install ./cli
+# from a clone, run these next to pyproject.toml — the repo root here, or ./cli
+# if you are in the read_paper monorepo
+pip install .
 
-# editable install (changes to cli/treeflow/ take effect immediately)
-pip install -e ./cli
+# editable install (changes to treeflow/ take effect immediately)
+pip install -e .
 
 # from GitHub without cloning
 pip install "git+https://github.com/nitpicker55555/Agent-Treeflow"
 
 # globally, in an isolated environment (recommended for a personal tool)
-pipx install ./cli
+pipx install .
 ```
 
 After installation the `treeflow` command is on PATH. `python -m treeflow`
