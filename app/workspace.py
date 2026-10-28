@@ -13,7 +13,7 @@ from .config import (
     WORKSPACE_FILE_LIST_LIMIT,
     WORK_DIR,
 )
-from .db import DB_LOCK, db_connection, path_to_node
+from .db import DB_LOCK, db_connection, path_to_node, resolve_stored_path
 from .utils import now_iso, parse_iso
 
 
@@ -74,6 +74,11 @@ def public_workspace_ref(path: Path) -> Dict[str, Any]:
 
 
 def resolve_workspace_file(value: str) -> Path:
+    """解析工作目录中的文件路径。
+
+    支持相对路径(相对于WORK_DIR)和绝对路径,返回绝对路径。
+    这提供了向后兼容性和向前的可移植性。
+    """
     raw = str(value or "").strip()
     if not raw:
         raise ValueError("File path cannot be empty")
@@ -87,6 +92,14 @@ def resolve_workspace_file(value: str) -> Path:
     if not path.exists() or not path.is_file():
         raise FileNotFoundError("File does not exist")
     return path
+
+
+def relative_workspace_path(abs_path: Path) -> str:
+    """转换绝对路径为相对于WORK_DIR的相对路径。方便迁移和备份。"""
+    try:
+        return abs_path.resolve().relative_to(WORK_DIR.resolve()).as_posix()
+    except ValueError:
+        raise ValueError(f"Path {abs_path} is not inside workspace {WORK_DIR}")
 
 
 def normalize_workspace_refs(values: Iterable[Any]) -> List[Dict[str, Any]]:
@@ -118,7 +131,7 @@ def workspace_snapshot() -> Dict[str, Tuple[Path, int, float]]:
         with DB_LOCK, db_connection() as conn:
             for row in conn.execute("SELECT path FROM files").fetchall():
                 try:
-                    tracked_uploads.add(Path(row["path"]).resolve())
+                    tracked_uploads.add(Path(resolve_stored_path(row["path"])).resolve())
                 except (OSError, ValueError):
                     continue
     except sqlite3.Error:
@@ -150,7 +163,12 @@ def record_workspace_changes(node_id: str, before: Dict[str, Tuple[Path, int, fl
         previous = before.get(rel_path)
         if previous and previous[1] == size and abs(previous[2] - mtime) < 0.001:
             continue
-        changed.append((node_id, rel_path, str(path), size, mtime, now_iso()))
+        # Store relative path for portability; resolve_workspace_file handles both rel and abs
+        try:
+            stored_path = path.resolve().relative_to(WORK_DIR.resolve()).as_posix()
+        except ValueError:
+            stored_path = str(path)
+        changed.append((node_id, rel_path, stored_path, size, mtime, now_iso()))
 
     if not changed:
         return

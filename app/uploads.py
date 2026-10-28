@@ -56,7 +56,10 @@ def store_upload(original_name: str, data: bytes, content_type: Optional[str] = 
 
     ``original_name`` 用户原始文件名,``data`` 文件字节,``content_type`` 可选 MIME。
     与具体 Web 框架解耦(FastAPI UploadFile / 任意来源皆可)。
+    存储相对于 WORK_DIR 的相对路径,方便迁移和备份。
     """
+    from .config import WORK_DIR
+
     original_name = original_name or "upload"
     safe_name = secure_filename(original_name) or "upload"
     file_id = uuid.uuid4().hex
@@ -73,6 +76,9 @@ def store_upload(original_name: str, data: bytes, content_type: Optional[str] = 
             "utf-8", errors="replace"
         )
 
+    # Store relative path from WORK_DIR for portability
+    rel_path = target_path.relative_to(WORK_DIR).as_posix()
+
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:
         conn.execute(
@@ -84,7 +90,7 @@ def store_upload(original_name: str, data: bytes, content_type: Optional[str] = 
                 file_id,
                 original_name,
                 safe_name,
-                str(target_path),
+                rel_path,
                 mime,
                 size,
                 text_excerpt,

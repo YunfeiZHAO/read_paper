@@ -6,12 +6,26 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .config import DATA_DIR, DB_PATH, RUN_DIR, UPLOAD_DIR, WORK_DIR
 from .utils import compact_title, now_iso, rows_to_dicts, safe_json_loads
 
 DB_LOCK = threading.RLock()
+
+
+def resolve_stored_path(stored: str) -> str:
+    """Resolve a stored path to absolute.
+
+    Stored paths may be relative (new style, relative to WORK_DIR) or absolute
+    (legacy rows written before this change). Either way returns an absolute path
+    string so callers don't have to care about which format a row uses.
+    """
+    p = Path(stored)
+    if p.is_absolute():
+        return stored
+    return str(WORK_DIR / p)
 
 
 def ensure_dirs() -> None:
@@ -182,10 +196,17 @@ def get_node(node_id: str) -> Optional[Dict[str, Any]]:
     return public_node(row) if row else None
 
 
+def _resolve_file_row(row: sqlite3.Row) -> Dict[str, Any]:
+    """Convert a files row to a dict, resolving the stored path to absolute."""
+    item = dict(row)
+    item["path"] = resolve_stored_path(item["path"])
+    return item
+
+
 def get_file(file_id: str) -> Optional[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
         row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
-    return dict(row) if row else None
+    return _resolve_file_row(row) if row else None
 
 
 def get_files(file_ids: Iterable[str]) -> List[Dict[str, Any]]:
@@ -198,7 +219,7 @@ def get_files(file_ids: Iterable[str]) -> List[Dict[str, Any]]:
             f"SELECT * FROM files WHERE id IN ({placeholders}) ORDER BY created_at",
             ids,
         ).fetchall()
-    return rows_to_dicts(rows)
+    return [_resolve_file_row(row) for row in rows]
 
 
 def create_node(
