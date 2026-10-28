@@ -25,6 +25,7 @@ const state = {
   parentId: null,
   fileIds: new Set(),
   workspaceRefs: [],
+  selectedBackend: localStorage.getItem("askBackend") === "claude" ? "claude" : "codex",
   layout: new Map(),
   nodeById: new Map(),
   childrenByParent: new Map(),
@@ -60,6 +61,7 @@ const els = {
   projectSelect: document.getElementById("projectSelect"),
   searchInput: document.getElementById("searchInput"),
   directionBtns: document.querySelectorAll("[data-direction]"),
+  backendBtns: document.querySelectorAll("[data-backend]"),
   focusBtn: document.getElementById("focusBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   zoomInBtn: document.getElementById("zoomInBtn"),
@@ -736,6 +738,7 @@ function render() {
   renderWorkspaceDrawer();
   renderProjectSelect();
   renderDirectionControls();
+  renderBackendControls();
   els.workspaceLabel.textContent = state.workDir ? state.workDir : "";
   els.emptyState.classList.toggle("visible", state.nodes.length === 0);
 }
@@ -1640,6 +1643,11 @@ function renderConversation() {
   if (state.mode === "claude_code") {
     const pill = makeResumePill(node);
     if (pill) metaEls.push(pill);
+  } else if (node.backend) {
+    const backendPill = document.createElement("span");
+    backendPill.className = `meta-pill backend-${node.backend}`;
+    backendPill.textContent = node.backend === "claude" ? "Claude" : "Codex";
+    metaEls.push(backendPill);
   }
 
   els.detailMeta.replaceChildren(...metaEls);
@@ -1981,6 +1989,12 @@ function renderDirectionControls() {
   }
 }
 
+function renderBackendControls() {
+  for (const button of els.backendBtns) {
+    button.classList.toggle("active", button.dataset.backend === state.selectedBackend);
+  }
+}
+
 async function sendPrompt(event) {
   event.preventDefault();
   if (state.mode === "claude_code") return;
@@ -1997,6 +2011,7 @@ async function sendPrompt(event) {
         prompt,
         file_ids: [...state.fileIds],
         workspace_refs: state.workspaceRefs.map((item) => ({ path: item.path })),
+        backend: state.selectedBackend,
       }),
     });
     const data = await res.json();
@@ -2471,6 +2486,15 @@ function wireEvents() {
       localStorage.setItem("treeDirection", direction);
       render();
       focusSelected();
+    });
+  }
+  for (const button of els.backendBtns) {
+    button.addEventListener("click", () => {
+      const backend = button.dataset.backend === "claude" ? "claude" : "codex";
+      if (backend === state.selectedBackend) return;
+      state.selectedBackend = backend;
+      localStorage.setItem("askBackend", backend);
+      renderBackendControls();
     });
   }
   els.projectSelect.addEventListener("change", () => {

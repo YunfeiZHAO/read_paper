@@ -7,10 +7,9 @@
 ## 运行
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-python app.py
+uv sync                 # 安装依赖(Claude 后端即可用)
+uv sync --extra codex   # 需要 Codex 后端时,额外装 sub-pool-client
+uv run python app.py
 ```
 
 默认地址是 <http://127.0.0.1:8080>，局域网内可通过本机 IP 的 8080 端口访问。

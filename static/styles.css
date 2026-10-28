@@ -242,6 +242,38 @@ pre {
   background: #7a4ca8;
 }
 
+.backend-toggle {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  height: 28px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.backend-toggle button {
+  min-width: 56px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.backend-toggle button + button {
+  border-left: 1px solid var(--line);
+}
+
+.backend-toggle button.active {
+  background: #3a5a78;
+  color: #fffdfa;
+}
+
+.backend-toggle button[data-backend="claude"].active {
+  background: #7a4ca8;
+}
+
 body.mode-claude_code .composer,
 body.mode-claude_code #ccImportBtn[hidden] {
   display: none !important;
@@ -1026,6 +1058,20 @@ button.meta-pill {
   background: rgba(40, 124, 116, 0.18);
   border-color: rgba(40, 124, 116, 0.5);
   color: #1f5a52;
+}
+
+.meta-pill.backend-codex {
+  border-color: rgba(58, 90, 120, 0.4);
+  background: rgba(58, 90, 120, 0.08);
+  color: rgba(30, 55, 80, 0.9);
+  font-weight: 620;
+}
+
+.meta-pill.backend-claude {
+  border-color: rgba(122, 76, 168, 0.4);
+  background: rgba(155, 89, 182, 0.08);
+  color: rgba(80, 40, 120, 0.9);
+  font-weight: 620;
 }
 
 .conversation-list {

@@ -1,0 +1,20 @@
+[project]
+name = "codex-tree-qa"
+version = "0.1.0"
+description = "把问答组织成树的 Flask Web 应用,后端可选 Codex CLI 或 Claude API。"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "Flask>=3.0,<4",
+    "anthropic",
+    "python-dotenv",
+]
+
+# Codex 后端才需要;Claude-only 使用时无需安装。
+# 启用:uv sync --extra codex
+[project.optional-dependencies]
+codex = ["sub-pool-client"]
+
+[tool.uv]
+# 这是应用而非库,不要把它自身当成包来构建安装,uv 只负责管理环境与依赖。
+package = false
