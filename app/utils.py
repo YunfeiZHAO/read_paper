@@ -1,4 +1,4 @@
-"""与业务无关的纯函数:时间、JSON、文本辅助。无其它内部模块依赖。"""
+"""Business-agnostic pure helpers: time, JSON, and text utilities. No internal deps."""
 from __future__ import annotations
 
 import json

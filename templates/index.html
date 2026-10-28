@@ -10,38 +10,57 @@
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">
-          <span class="brand-mark">◇</span>
-          <div class="brand-copy">
-            <strong>PDF Tree QA</strong>
-            <span id="workspaceLabel"></span>
-          </div>
+          <button class="brand-mark" id="homeBtn" type="button" title="All workspaces">◇</button>
+          <nav id="breadcrumb" class="breadcrumb" aria-label="Breadcrumb"></nav>
         </div>
-        <label class="project-select">
-          <span id="projectSelectLabel">Paper</span>
-          <select id="documentSelect"></select>
-        </label>
-        <label class="doc-upload" title="Upload PDF" aria-label="Upload PDF">
-          <input id="docUploadInput" type="file" accept="application/pdf,.pdf" hidden />
-          <span aria-hidden="true">+ PDF</span>
-        </label>
-        <button id="docDeleteBtn" class="icon-button danger-button" type="button" title="Delete current PDF (with its highlights and question tree)">⌫</button>
-        <label class="search-box">
+        <label class="search-box reader-only">
           <span>⌕</span>
           <input id="searchInput" type="search" placeholder="Search nodes" autocomplete="off" />
         </label>
         <div class="topbar-actions">
-          <div class="pane-visibility" aria-label="Panes">
+          <div class="pane-visibility reader-only" aria-label="Panes">
             <button id="togglePdfBtn" class="pane-toggle active" type="button" title="PDF pane">PDF</button>
             <button id="toggleTreeBtn" class="pane-toggle active" type="button" title="Question tree pane">Tree</button>
             <button id="toggleChatBtn" class="pane-toggle active" type="button" title="Conversation pane">Chat</button>
           </div>
-          <div class="direction-toggle" aria-label="Tree direction">
+          <div class="direction-toggle reader-only" aria-label="Tree direction">
             <button class="active" data-direction="down" type="button">Down</button>
             <button data-direction="right" type="button">Right</button>
           </div>
           <button id="refreshBtn" class="icon-button" type="button" title="Refresh">↻</button>
         </div>
       </header>
+
+      <!-- Shared hidden PDF file input, triggered from the workspace screen and the reader empty state. -->
+      <input id="docUploadInput" type="file" accept="application/pdf,.pdf" hidden />
+
+      <div id="appContent" class="app-content view-home">
+        <!-- ── Home: workspace card wall ───────────────────────────── -->
+        <section id="homeScreen" class="screen home-screen">
+          <div class="screen-head">
+            <h1>Workspaces</h1>
+            <button id="homeNewBtn" class="ws-btn primary" type="button">+ New workspace</button>
+          </div>
+          <div id="homeGrid" class="home-grid"></div>
+        </section>
+
+        <!-- ── Workspace detail: its PDFs + shared files ───────────── -->
+        <section id="workspaceScreen" class="screen workspace-screen">
+          <div class="screen-head">
+            <div class="screen-head-copy">
+              <h1 id="wsTitle"></h1>
+              <p id="wsDesc" class="screen-sub"></p>
+            </div>
+            <div class="screen-head-actions">
+              <button id="wsRenameBtn" class="ws-btn" type="button">Rename</button>
+              <button id="wsAddPdfBtn" class="ws-btn primary" type="button">+ PDF</button>
+            </div>
+          </div>
+          <h2 class="section-label">PDFs</h2>
+          <div id="wsDocGrid" class="doc-grid"></div>
+          <h2 class="section-label">Shared files</h2>
+          <div id="wsFileList" class="ws-file-list"></div>
+        </section>
 
       <main class="main-layout panes-layout">
         <!-- ── PDF pane ───────────────────────────────────────────── -->
@@ -173,6 +192,7 @@
           </div>
         </aside>
       </main>
+      </div>
 
       <!-- Floating toolbar shown after selecting text -->
       <div id="selectionToolbar" class="selection-toolbar" hidden>

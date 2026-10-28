@@ -14,9 +14,9 @@ A **document** is one uploaded PDF — the top-level "project". It owns:
   highlight (`nodes.source_highlight_id`), and that highlight is linked back
   to the node it spawned (`highlights.node_id`).
 
-Supporting tables: **files** (physical uploads on disk), **node_workspace_files**
-(files a Codex run touched), and the legacy accounting tables
-**account_usage** / **account_probe**.
+Supporting tables: **files** (physical uploads on disk) and **node_workspace_files**
+(files a run touched under the workspace scratch directory). The top-level **workspaces**
+table groups PDFs into user projects.
 
 ## Entity-relationship diagram
 
@@ -68,7 +68,7 @@ Supporting tables: **files** (physical uploads on disk), **node_workspace_files*
                                                │ path, size, mtime        │
                                                └──────────────────────────┘
 
- Legacy / standalone:   account_usage (name PK)     account_probe (name PK)
+ Top-level grouping:  workspaces (id PK) ──< documents.workspace_id, files.workspace_id
 ```
 
 `highlights` ↔ `nodes` is a two-way link:
@@ -118,7 +118,6 @@ Index: `idx_highlights_document_id`.
 | `status` | TEXT | `queued` → `running` → `done` / `failed` |
 | `backend` | TEXT | `'codex'` or `'claude'` |
 | `enable_web_search` | INTEGER | 0/1 |
-| `account_name` / `account_path` / `account_reason` | TEXT | internal; stripped from API responses |
 | `codex_session_id` | TEXT | for resume |
 | `model`, `cwd` | TEXT | |
 | `prompt_tokens` / `completion_tokens` / `total_tokens` | INTEGER | usage |
@@ -159,33 +158,30 @@ Index: `idx_files_created_at`.
 | `created_at` | TEXT | ISO timestamp |
 
 PK: `(node_id, rel_path)`. Index: `idx_node_workspace_files_node_id`.
-The PDF UI no longer surfaces the workspace drawer, but the backend tracking remains.
+Populated by the workspace snapshot/diff in `app/workspace.py` and surfaced in the reader's
+workspace-files side tab.
 
-### `account_usage` — legacy per-account token accounting
+### `workspaces` — a user project (a group of PDFs + a shared file drawer)
 | column | type | notes |
 |---|---|---|
-| `name` | TEXT PK | account name |
-| `used_tokens` | INTEGER | running total |
-| `last_node_id` | TEXT | last node charged |
-| `updated_at` | TEXT | ISO timestamp |
+| `id` | TEXT PK | uuid hex |
+| `title` | TEXT | display name |
+| `description` | TEXT | optional |
+| `archived` | INTEGER | 0/1 soft-delete flag |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+| `last_opened_at` | TEXT | drives recency sort on the home page |
 
-### `account_probe` — legacy account health checks
-| column | type | notes |
-|---|---|---|
-| `name` | TEXT PK | account name |
-| `auth_file` | TEXT | path to auth.json |
-| `status` | TEXT | probe result |
-| `checked_at` | TEXT | ISO timestamp |
-| `duration_ms` | INTEGER | probe latency |
-| `error` / `answer` | TEXT | nullable |
-
-> `account_usage` / `account_probe` are largely superseded by the external
-> `sub-pool-client`, which leases a Codex account per request.
+`documents.workspace_id` and `files.workspace_id` reference this table. Index:
+`idx_workspaces_archived`.
 
 ## Notes on migrations
 
 `init_db()` is idempotent (`CREATE TABLE IF NOT EXISTS`) and additionally runs
 `ALTER TABLE` guards for columns added after the original schema
 (`workspace_refs_json`, `note_md`, `backend`, `enable_web_search`,
-`document_id`, `source_highlight_id`). The `idx_nodes_document_id` index is
-created *after* the `document_id` ALTER so old databases upgrade cleanly.
+`document_id`, `source_highlight_id` on `nodes`; `workspace_id` on `documents`/`files`).
+Indexes that depend on an added column (e.g. `idx_nodes_document_id`,
+`idx_documents_workspace_id`) are created *after* the corresponding ALTER so old databases
+upgrade cleanly. Older databases may still carry retired columns
+(`account_name`/`account_path`/`account_reason`) or tables (`account_usage`/`account_probe`);
+they are simply ignored.

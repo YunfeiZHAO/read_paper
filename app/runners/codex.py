@@ -1,4 +1,6 @@
-"""Codex 后端:通过 sub-pool 租号,shell 出 `codex exec --json` 并流式读取事件。"""
+"""Codex backend: lease an account from the sub-pool, shell out to `codex exec --json`,
+and read the event stream line by line.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +18,7 @@ from ..config import (
     WORK_DIR,
     PooledCodexClient,
 )
-from ..db import add_account_usage, get_files, get_highlight, get_node, update_node
+from ..db import get_files, get_highlight, get_node, update_node
 from ..events import (
     collect_tools_count,
     collect_usage,
@@ -31,7 +33,7 @@ from ..workspace import record_workspace_changes, workspace_snapshot
 
 
 def _codex_search_args(enabled: bool) -> List[str]:
-    """开启联网搜索时返回 ["--search"],否则返回空(不给 codex 传该 flag)。"""
+    """Return ["--search"] when web search is enabled, otherwise nothing (flag omitted)."""
     return ["--search"] if enabled else []
 
 
@@ -67,20 +69,15 @@ async def _run_codex_for_node_async(node_id: str) -> None:
     stderr_text = ""
     returncode: Optional[int] = None
     timed_out = False
-    account_name: Optional[str] = None
-    lease_id: Optional[str] = None
     rate_limited = False
 
     try:
+        # PooledCodexClient leases a Codex account for the duration of this run and sets up
+        # the auth env; on a 429 we report it back so the pool puts that account on cooldown.
         async with PooledCodexClient(required_model=CODEX_MODEL or None) as client:
-            account_name = client.account
-            lease_id = client.lease_id
             update_node(
                 node_id,
                 status="running",
-                account_name=account_name,
-                account_path=f"sub-pool lease {lease_id or ''}".strip(),
-                account_reason=f"sub-pool auto-assigned (model={CODEX_MODEL})",
                 model=CODEX_MODEL or None,
             )
 
@@ -228,8 +225,6 @@ async def _run_codex_for_node_async(node_id: str) -> None:
             completed_at=now_iso(),
             error=None,
         )
-        if account_name:
-            add_account_usage(account_name, node_id, usage["total_tokens"])
     else:
         error = stderr_text.strip() or stdout_text.strip() or "Codex execution failed"
         if rate_limited:
@@ -245,8 +240,6 @@ async def _run_codex_for_node_async(node_id: str) -> None:
             completion_tokens=usage["completion_tokens"],
             total_tokens=usage["total_tokens"],
         )
-        if account_name:
-            add_account_usage(account_name, node_id, usage["total_tokens"])
 
 
 def run_codex_for_node(node_id: str) -> None:

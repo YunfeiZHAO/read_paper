@@ -1,4 +1,10 @@
-"""把祖先链 + 附件 + workspace 引用拼成 Codex/Claude 的自包含 prompt。"""
+"""Stitch the ancestor chain + attachments + workspace refs into one self-contained
+prompt for Codex/Claude.
+
+This is what makes the "tree" work without a stateful chat history: every request walks
+from the node up to the root and inlines each ancestor's question, answer, and references,
+so any node can be forked and still carry full context in a single fresh LLM call.
+"""
 from __future__ import annotations
 
 from pathlib import Path

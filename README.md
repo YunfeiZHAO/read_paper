@@ -1,42 +1,72 @@
-# Codex Tree QA
+# PDF Tree QA
 
-一个 Flask 版 Codex 问答前后端。每一轮 `user -> assistant` 是树上的一个节点，可以从任意节点继续发问，新的回答会成为该节点的子节点，因此同一节点可以并行 fork 多条会话。
+A FastAPI web app for reading PDFs and asking **tree-structured** questions about them.
+You read a paper in a real PDF viewer (PDF.js), highlight text, and ask the LLM a question
+straight from a selection. Each question is a node in a tree — fork a new question from any
+earlier node, so your exploration branches instead of growing into one linear chat.
 
-![Codex Tree QA 界面截图](img.png)
+Backends are pluggable: the **Claude API** (default) or the **Codex CLI**.
 
-## 运行
+![PDF Tree QA screenshot](img.png)
 
-```bash
-uv sync                 # 安装依赖(Claude 后端即可用)
-uv sync --extra codex   # 需要 Codex 后端时,额外装 sub-pool-client
-uv run python app.py
-```
+## Run
 
-默认地址是 <http://127.0.0.1:8080>，局域网内可通过本机 IP 的 8080 端口访问。
-
-## 配置
-
-默认会使用：
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`).
 
 ```bash
-/Users/puzhen/PycharmProjects/datagen_mcp_toolathlon_ver_2/codex_token/auth_outlook_puzhen.json
+uv sync                 # install deps (enough for the Claude backend)
+uv sync --extra codex   # also install sub-pool-client for the Codex backend
+uv run python app.py    # serves on http://127.0.0.1:8080 (0.0.0.0 — reachable on your LAN)
 ```
 
-可用环境变量覆盖：
+## Configure
+
+Copy `.env.example` to `.env` and fill in the backend you want (it loads automatically).
+
+For the **Claude backend**, Claude credentials are all you need:
 
 ```bash
-CODEX_AUTH_FILE=/path/to/auth.json
-CODEX_MODEL=gpt-5.5
-CODEX_TIMEOUT_SECONDS=1200
-PORT=8080
+ANTHROPIC_BASE_URL=...       # custom gateway; or use ANTHROPIC_API_KEY for the official API
+ANTHROPIC_AUTH_TOKEN=...
+# CLAUDE_API_MODEL=claude-sonnet-4-6   # optional override
 ```
 
-账号逻辑：
+Common environment variables (see `.env.example` for the full list):
 
-- 后端固定使用 `CODEX_AUTH_FILE` 指向的 auth 文件。
-- 前端不显示账号状态，也不能设置账号。
-- 每次运行会把 auth 文件复制到 `instance/codex_homes/<account>/auth.json`，通过 `CODEX_HOME` 给该次 `codex exec` 使用，不覆盖 `~/.codex/auth.json`。
-- 后端调用 Codex 时固定启用 `--search` 和 `--dangerously-bypass-approvals-and-sandbox`，即允许 web search、bash 和完整本机执行权限。
-- Codex JSONL 事件会写入节点，前端在 Agent 气泡内显示正在调用的工具、命令或搜索 query。
+| Variable | Purpose |
+|---|---|
+| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` | Claude backend credentials |
+| `CLAUDE_API_MODEL` | Claude model (default `claude-sonnet-4-6`) |
+| `ENABLE_WEB_SEARCH` | default web-search toggle (per-request override in the UI; default `false`) |
+| `CODEX_MODEL` | Codex model (default `gpt-5.5`) |
+| `SUB_POOL_URL` / `SUB_POOL_KEY` | credentials for the `sub-pool-client` that leases a Codex account per request |
+| `PORT` / `HOST` | server bind address (default `8080` / `0.0.0.0`) |
+| `APP_RELOAD` | set to `1` to enable uvicorn auto-reload during development |
 
-上传文件会存到 `instance/workspace/uploads/`，文本类文件会把片段放进 prompt，所有文件都会把本地路径传给 Codex。
+### Backends
+
+- **Claude** (default) runs an agentic loop over the Anthropic SDK with a `bash` tool (full
+  local exec in the workspace directory) and an optional `web_search` tool.
+- **Codex** shells out to `codex exec --json`. Accounts are leased per request by the external
+  `sub-pool-client` package; it is an optional extra (`[codex]`), and when it isn't installed
+  the Codex backend fails gracefully and tells you to switch to Claude.
+
+Pick the backend in the top bar before asking. Both always run with web search available
+(per the toggle) and full local execution in the shared workspace directory.
+
+## Data
+
+Everything lives in one SQLite database at `instance/codex_qa.sqlite` (override the directory
+with `CODEX_QA_DATA_DIR`). Uploaded PDFs and attachments are stored under
+`instance/workspace/uploads/`, and the rest of `instance/workspace/` is a scratch directory the
+AI can read and write. See [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) for the schema and
+[explain.md](explain.md) for a guided tour of the codebase.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+> A separate, standalone CLI lives under [`cli/`](cli/) (treeflow) for browsing local Claude
+> Code / Codex conversation history. It shares no code with this web app — see `cli/README.md`.

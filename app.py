@@ -1,7 +1,9 @@
-"""入口文件。后端代码已拆分到 app/ 包,这里只负责创建并启动应用。
+"""Entry point. The backend lives in the app/ package; this module only creates
+and launches the application.
 
-`python app.py` 以 __main__ 运行,其中 `from app import create_app` 解析到 app/ 包
-(同名下包优先于模块),两者不冲突。用 uvicorn 以 ASGI 方式服务 FastAPI 应用。
+Running `python app.py` executes this as __main__, where `from app import create_app`
+resolves to the app/ package (a sibling package shadows the same-named module, and the
+two don't conflict). uvicorn then serves the FastAPI app over ASGI.
 """
 from __future__ import annotations
 
@@ -17,9 +19,9 @@ if __name__ == "__main__":
 
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8080"))
-    # 复用既有的 FLASK_DEBUG 开关名以免破坏用户的 .env;开启后启用热重载。
-    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    if debug:
+    # APP_RELOAD=1 enables uvicorn's auto-reload (handy during development).
+    reload = os.environ.get("APP_RELOAD", "0") == "1"
+    if reload:
         uvicorn.run("app:create_app", factory=True, host=host, port=port, reload=True)
     else:
         uvicorn.run(app, host=host, port=port)

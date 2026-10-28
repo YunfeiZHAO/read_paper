@@ -1,4 +1,6 @@
-"""后端调度:按节点的 backend 字段选择 Codex 或 Claude runner,在后台线程里跑。"""
+"""Backend dispatch: pick the Codex or Claude runner from a node's `backend` field
+and run it in a background daemon thread.
+"""
 from __future__ import annotations
 
 import threading

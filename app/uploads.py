@@ -1,4 +1,6 @@
-"""用户附件上传:落盘到 instance/workspace/uploads/,缓存文本类文件的片段。"""
+"""User attachment uploads: write files under instance/workspace/uploads/ and cache a
+text excerpt for text-like files.
+"""
 from __future__ import annotations
 
 import mimetypes
@@ -13,14 +15,15 @@ from .utils import now_iso
 
 
 def secure_filename(name: str) -> str:
-    """把用户文件名收敛成安全的单段文件名(替代 werkzeug.secure_filename)。
+    """Reduce a user-supplied filename to a safe, single-segment name (our own stand-in
+    for werkzeug.secure_filename).
 
-    去掉路径分隔符与控制字符,折叠空白为下划线,只保留基本名;空结果回退为空串
-    (调用方再回退到 "upload")。
+    Strips path separators and control characters, collapses whitespace to underscores, and
+    keeps only the basename; an empty result falls back to "" (the caller then uses "upload").
     """
     name = (name or "").replace("\\", "/").split("/")[-1]
     name = name.strip().replace("\x00", "")
-    # 允许字母数字、点、下划线、连字符;其余(含空白)折叠为下划线。
+    # Allow letters, digits, dot, underscore, hyphen; collapse everything else (incl. whitespace).
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
     name = name.strip("._")
     return name
@@ -51,12 +54,18 @@ def is_text_like(filename: str, mime: Optional[str]) -> bool:
     }
 
 
-def store_upload(original_name: str, data: bytes, content_type: Optional[str] = None) -> Dict[str, Any]:
-    """落盘一个上传文件,写入 files 表并返回其公开表示。
+def store_upload(
+    original_name: str,
+    data: bytes,
+    content_type: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write one uploaded file to disk, insert a `files` row, and return its public dict.
 
-    ``original_name`` 用户原始文件名,``data`` 文件字节,``content_type`` 可选 MIME。
-    与具体 Web 框架解耦(FastAPI UploadFile / 任意来源皆可)。
-    存储相对于 WORK_DIR 的相对路径,方便迁移和备份。
+    ``original_name`` is the user's filename, ``data`` the bytes, ``content_type`` an optional
+    MIME type, and ``workspace_id`` the owning workspace (None when unowned). This is decoupled
+    from the web framework (works with a FastAPI UploadFile or any other source). The path is
+    stored relative to WORK_DIR so the data directory stays portable.
     """
     from .config import WORK_DIR
 
@@ -83,11 +92,12 @@ def store_upload(original_name: str, data: bytes, content_type: Optional[str] = 
     with DB_LOCK, db_connection() as conn:
         conn.execute(
             """
-            INSERT INTO files (id, original_name, stored_name, path, mime, size, text_excerpt, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO files (id, workspace_id, original_name, stored_name, path, mime, size, text_excerpt, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 file_id,
+                workspace_id,
                 original_name,
                 safe_name,
                 rel_path,

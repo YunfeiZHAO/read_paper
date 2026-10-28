@@ -1,3 +1,12 @@
+// Frontend for the PDF Tree QA app. Vanilla JS, no build step.
+//
+// Three-pane layout: PDF viewer (PDF.js) │ question tree (SVG) │ conversation + notes.
+// All UI state lives in the single top-level `state` object below; the rest of the file
+// is functions that read/mutate that object and render directly to the DOM.
+//
+// Navigation is hash-routed through three views: home (workspace cards) → workspace
+// (PDF list) → reader (the three-pane view for one PDF). See parseRoute()/applyRoute().
+
 const NODE_W = 238;
 const NODE_H = 112;
 const NODE_OVERFLOW = 18;
@@ -24,7 +33,13 @@ const state = {
   nodes: [],
   files: [],
   workDir: "",
-  // ── PDF / 文档 ──
+  // ── Workspaces (a user project: a group of PDFs + shared files) ──
+  view: "home", // "home" | "workspace" | "reader"
+  workspaces: [],
+  currentWorkspaceId: localStorage.getItem("currentWorkspaceId") || null,
+  wsDetail: { documents: [], files: [] }, // workspace-detail page data
+  allFiles: [], // all files from /api/tree (state.files is the subset for the current workspace)
+  // ── PDF / documents ──
   documents: [],
   currentDocId: localStorage.getItem("currentDocId") || null,
   pdfDoc: null,
@@ -64,16 +79,13 @@ const state = {
   projectNotesProjectId: null,
   noteContextText: "",
   scrollConversationToLatest: false,
-  projectStats: new Map(),
-  mode: "live",
-  liveSnapshot: null,
-  ccSnapshot: null,
-  ccPath: "",
+  // Root node id whose subtree the "project notes" summary aggregates (null = none yet).
+  selectedProjectId: null,
+  // Files the AI touched under the workspace scratch dir, for the current node's side tab.
+  workspaceFiles: [],
 };
 
 const els = {
-  workspaceLabel: document.getElementById("workspaceLabel"),
-  projectSelect: document.getElementById("projectSelect"),
   searchInput: document.getElementById("searchInput"),
   directionBtns: document.querySelectorAll("[data-direction]"),
   backendBtns: document.querySelectorAll("[data-backend]"),
@@ -114,7 +126,20 @@ const els = {
   nodePromptPreview: document.getElementById("nodePromptPreview"),
   deleteBtn: document.getElementById("deleteBtn"),
   exportBtn: document.getElementById("exportBtn"),
-  // ── 文档 / PDF ──
+  // ── documents / PDF ──
+  homeBtn: document.getElementById("homeBtn"),
+  breadcrumb: document.getElementById("breadcrumb"),
+  appContent: document.getElementById("appContent"),
+  homeScreen: document.getElementById("homeScreen"),
+  homeGrid: document.getElementById("homeGrid"),
+  homeNewBtn: document.getElementById("homeNewBtn"),
+  workspaceScreen: document.getElementById("workspaceScreen"),
+  wsTitle: document.getElementById("wsTitle"),
+  wsDesc: document.getElementById("wsDesc"),
+  wsRenameBtn: document.getElementById("wsRenameBtn"),
+  wsAddPdfBtn: document.getElementById("wsAddPdfBtn"),
+  wsDocGrid: document.getElementById("wsDocGrid"),
+  wsFileList: document.getElementById("wsFileList"),
   documentSelect: document.getElementById("documentSelect"),
   docUploadInput: document.getElementById("docUploadInput"),
   docDeleteBtn: document.getElementById("docDeleteBtn"),
@@ -514,20 +539,406 @@ function selectedNode() {
   return state.nodeById.get(state.selectedId) || null;
 }
 
-function parentNode() {
-  return state.nodeById.get(state.parentId) || null;
+function currentWorkspace() {
+  return state.workspaces.find((w) => w.id === state.currentWorkspaceId) || null;
+}
+
+async function fetchWorkspaces() {
+  try {
+    const res = await fetch("/api/workspaces");
+    const data = await res.json();
+    state.workspaces = data.workspaces || [];
+  } catch (err) {
+    console.error(err);
+    state.workspaces = [];
+  }
+  // Validate the current workspace: fall back to the first one, or create a default if none exist.
+  if (state.currentWorkspaceId && !state.workspaces.some((w) => w.id === state.currentWorkspaceId)) {
+    state.currentWorkspaceId = null;
+  }
+  if (!state.currentWorkspaceId && state.workspaces.length) {
+    state.currentWorkspaceId = state.workspaces[0].id;
+  }
+  if (!state.workspaces.length) {
+    const created = await createWorkspace("My workspace", { silent: true });
+    if (created) state.currentWorkspaceId = created.id;
+  }
+  if (state.currentWorkspaceId) localStorage.setItem("currentWorkspaceId", state.currentWorkspaceId);
+  else localStorage.removeItem("currentWorkspaceId");
+}
+
+async function createWorkspace(title, { silent = false } = {}) {
+  const name = String(title || "").trim();
+  if (!name) return null;
+  try {
+    const res = await fetch("/api/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: name }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Create failed");
+    // Refresh the local list so counts/order stay consistent.
+    const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => ({}));
+    state.workspaces = list.workspaces || state.workspaces;
+    return data.workspace;
+  } catch (err) {
+    if (!silent) window.alert(err.message);
+    return null;
+  }
+}
+
+// ── Routing / views (home → workspace → reader) ─────────────────────────
+
+function parseRoute() {
+  const raw = (location.hash || "").replace(/^#/, "");
+  const parts = raw.split("/").filter(Boolean); // ["w","<id>","d","<docId>"]
+  if (parts[0] === "w" && parts[1]) {
+    if (parts[2] === "d" && parts[3]) return { view: "reader", wsId: parts[1], docId: parts[3] };
+    return { view: "workspace", wsId: parts[1] };
+  }
+  return { view: "home" };
+}
+
+function routeHash(view, { wsId, docId } = {}) {
+  if (view === "workspace" && wsId) return `#/w/${wsId}`;
+  if (view === "reader" && wsId && docId) return `#/w/${wsId}/d/${docId}`;
+  return "#/";
+}
+
+function navigate(view, opts = {}) {
+  const hash = routeHash(view, opts);
+  if (location.hash === hash || (!location.hash && hash === "#/")) {
+    applyRoute().catch(console.error); // same hash → no hashchange event, apply manually
+  } else {
+    location.hash = hash;
+  }
+}
+
+async function applyRoute() {
+  const route = parseRoute();
+  state.view = route.view;
+  applyView();
+
+  if (route.view === "home") {
+    await fetchWorkspaces();
+    renderHome();
+  } else if (route.view === "workspace") {
+    await fetchWorkspaces();
+    if (!state.workspaces.some((w) => w.id === route.wsId)) return navigate("home");
+    setCurrentWorkspace(route.wsId);
+    await fetchWorkspaceDetail(route.wsId);
+    renderWorkspaceDetail();
+  } else if (route.view === "reader") {
+    await fetchWorkspaces();
+    if (!state.workspaces.some((w) => w.id === route.wsId)) return navigate("home");
+    setCurrentWorkspace(route.wsId);
+    await fetchDocuments();
+    if (!state.documents.some((d) => d.id === route.docId)) {
+      return navigate("workspace", { wsId: route.wsId });
+    }
+    await selectDocument(route.docId, { keepNode: false });
+  }
+  renderBreadcrumb();
+  try {
+    localStorage.setItem("lastRoute", location.hash || "#/");
+  } catch {}
+}
+
+function setCurrentWorkspace(wsId) {
+  state.currentWorkspaceId = wsId;
+  try {
+    localStorage.setItem("currentWorkspaceId", wsId);
+  } catch {}
+}
+
+function applyView() {
+  if (els.appContent) els.appContent.className = "app-content view-" + state.view;
+  document.body.classList.toggle("hide-reader-controls", state.view !== "reader");
+}
+
+function refreshCurrentScreen() {
+  renderBreadcrumb();
+  if (state.view === "home") renderHome();
+  else if (state.view === "workspace") renderWorkspaceDetail();
+}
+
+function renderBreadcrumb() {
+  if (!els.breadcrumb) return;
+  const crumbs = [];
+  const add = (label, { onClick = null, current = false } = {}) => {
+    if (crumbs.length) {
+      const sep = document.createElement("span");
+      sep.className = "crumb-sep";
+      sep.textContent = "▸";
+      crumbs.push(sep);
+    }
+    const el = document.createElement(onClick ? "button" : "span");
+    el.className = "crumb" + (current ? " current" : "");
+    el.textContent = label;
+    if (onClick) {
+      el.type = "button";
+      el.addEventListener("click", onClick);
+    }
+    crumbs.push(el);
+  };
+
+  if (state.view === "home") {
+    add("Workspaces", { current: true });
+  } else if (state.view === "workspace") {
+    const ws = currentWorkspace() || state.wsDetail.workspace;
+    add("Workspaces", { onClick: () => navigate("home") });
+    add(ws ? ws.title || "Untitled" : "…", { current: true });
+  } else if (state.view === "reader") {
+    const ws = currentWorkspace() || state.wsDetail.workspace;
+    const doc = currentDocument();
+    add("Workspaces", { onClick: () => navigate("home") });
+    add(ws ? ws.title || "Untitled" : "…", {
+      onClick: () => navigate("workspace", { wsId: state.currentWorkspaceId }),
+    });
+    add(doc ? compact(doc.title || doc.original_name || "Untitled", 42) : "…", { current: true });
+  }
+  els.breadcrumb.replaceChildren(...crumbs);
+}
+
+// ── Home: wall of workspace cards ────────────────────────────────────────
+
+function renderHome() {
+  if (!els.homeGrid) return;
+  if (!state.workspaces.length) {
+    const empty = document.createElement("div");
+    empty.className = "screen-empty";
+    empty.textContent = "No workspaces yet. Create one to start adding PDFs.";
+    els.homeGrid.replaceChildren(empty);
+    return;
+  }
+  const cards = state.workspaces.map((ws) => {
+    const card = document.createElement("div");
+    card.className = "ws-card";
+
+    const body = document.createElement("button");
+    body.type = "button";
+    body.className = "ws-card-body";
+    body.addEventListener("click", () => navigate("workspace", { wsId: ws.id }));
+    const title = document.createElement("div");
+    title.className = "ws-card-title";
+    title.textContent = ws.title || "Untitled";
+    const meta = document.createElement("div");
+    meta.className = "ws-card-meta";
+    const when = (ws.last_opened_at || "").slice(0, 10);
+    meta.textContent = `${ws.document_count || 0} PDF` + (when ? `  ·  ${when}` : "");
+    body.append(title, meta);
+    if (ws.description) {
+      const desc = document.createElement("div");
+      desc.className = "ws-card-desc";
+      desc.textContent = ws.description;
+      body.append(desc);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "ws-card-actions";
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "ws-btn";
+    renameBtn.textContent = "Rename";
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameWorkspace(ws).catch(console.error);
+    });
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "ws-btn danger";
+    delBtn.textContent = "Delete";
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeWorkspace(ws).catch(console.error);
+    });
+    actions.append(renameBtn, delBtn);
+
+    card.append(body, actions);
+    return card;
+  });
+  els.homeGrid.replaceChildren(...cards);
+}
+
+// ── Workspace detail: PDF list + shared file drawer ──────────────────────
+
+async function fetchWorkspaceDetail(wsId) {
+  try {
+    const res = await fetch(`/api/workspaces/${wsId}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Load failed");
+    state.wsDetail = {
+      workspace: data.workspace || null,
+      documents: data.documents || [],
+      files: data.files || [],
+    };
+  } catch (err) {
+    console.error(err);
+    state.wsDetail = { workspace: null, documents: [], files: [] };
+  }
+}
+
+function renderWorkspaceDetail() {
+  const ws = currentWorkspace() || state.wsDetail.workspace;
+  if (els.wsTitle) els.wsTitle.textContent = ws ? ws.title || "Untitled" : "";
+  if (els.wsDesc) {
+    els.wsDesc.textContent = ws && ws.description ? ws.description : "";
+    els.wsDesc.hidden = !(ws && ws.description);
+  }
+
+  if (els.wsDocGrid) {
+    const docs = state.wsDetail.documents;
+    if (!docs.length) {
+      const empty = document.createElement("div");
+      empty.className = "screen-empty";
+      empty.textContent = "No PDFs yet. Click “+ PDF” to add one.";
+      els.wsDocGrid.replaceChildren(empty);
+    } else {
+      const cards = docs.map((doc) => {
+        const card = document.createElement("div");
+        card.className = "doc-card";
+        const body = document.createElement("button");
+        body.type = "button";
+        body.className = "doc-card-body";
+        body.addEventListener("click", () =>
+          navigate("reader", { wsId: state.currentWorkspaceId, docId: doc.id })
+        );
+        const t = document.createElement("div");
+        t.className = "doc-card-title";
+        t.textContent = doc.title || doc.original_name || "Untitled";
+        const m = document.createElement("div");
+        m.className = "doc-card-meta";
+        m.textContent = doc.num_pages ? `${doc.num_pages} pages` : "PDF";
+        body.append(t, m);
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "doc-card-del";
+        del.title = "Delete PDF";
+        del.textContent = "⌫";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteDocument(doc).catch(console.error);
+        });
+        card.append(body, del);
+        return card;
+      });
+      els.wsDocGrid.replaceChildren(...cards);
+    }
+  }
+
+  if (els.wsFileList) {
+    const files = state.wsDetail.files;
+    if (!files.length) {
+      const empty = document.createElement("div");
+      empty.className = "screen-empty";
+      empty.textContent = "No shared files in this workspace.";
+      els.wsFileList.replaceChildren(empty);
+    } else {
+      const rows = files.map((f) => {
+        const row = document.createElement("a");
+        row.className = "ws-file-row";
+        row.href = `/api/files/${f.id}/download`;
+        const name = document.createElement("span");
+        name.className = "ws-file-name";
+        name.textContent = f.original_name;
+        const sub = document.createElement("span");
+        sub.className = "ws-file-sub";
+        sub.textContent = formatBytes(f.size);
+        row.append(name, sub);
+        return row;
+      });
+      els.wsFileList.replaceChildren(...rows);
+    }
+  }
+}
+
+async function renameWorkspace(ws) {
+  const next = window.prompt("Rename workspace", ws.title || "");
+  if (next == null) return;
+  const title = next.trim();
+  if (!title || title === ws.title) return;
+  try {
+    const res = await fetch(`/api/workspaces/${ws.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "Rename failed");
+    }
+    await fetchWorkspaces();
+    if (state.view === "workspace" && state.currentWorkspaceId === ws.id) {
+      await fetchWorkspaceDetail(ws.id);
+    }
+    refreshCurrentScreen();
+  } catch (err) {
+    window.alert(err.message);
+  }
+}
+
+async function removeWorkspace(ws) {
+  const warn = `Delete workspace "${ws.title}"?\nIts ${ws.document_count || 0} PDF(s), with all highlights and question trees, will be permanently deleted.`;
+  if (!window.confirm(warn)) return;
+  try {
+    const res = await fetch(`/api/workspaces/${ws.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "Delete failed");
+    }
+    if (state.currentWorkspaceId === ws.id) {
+      state.currentWorkspaceId = null;
+      try {
+        localStorage.removeItem("currentWorkspaceId");
+      } catch {}
+    }
+    await fetchWorkspaces();
+    // If we deleted the workspace we're viewing → go home; otherwise refresh the current page.
+    if (state.view !== "home" && parseRoute().wsId === ws.id) {
+      navigate("home");
+    } else {
+      refreshCurrentScreen();
+    }
+  } catch (err) {
+    window.alert(err.message);
+  }
+}
+
+async function deleteDocument(doc) {
+  if (!doc) return;
+  if (
+    !window.confirm(
+      `Delete "${doc.title || doc.original_name}"?\nAll of its highlights and question nodes will be deleted too, and this can't be undone.`
+    )
+  )
+    return;
+  try {
+    const res = await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "Delete failed");
+    }
+    await fetchWorkspaces();
+    if (state.currentWorkspaceId) await fetchWorkspaceDetail(state.currentWorkspaceId);
+    renderWorkspaceDetail();
+  } catch (err) {
+    window.alert(err.message);
+  }
 }
 
 async function fetchDocuments() {
+  const wsId = state.currentWorkspaceId;
   try {
-    const res = await fetch("/api/documents");
+    const url = wsId ? `/api/documents?workspace_id=${encodeURIComponent(wsId)}` : "/api/documents";
+    const res = await fetch(url);
     const data = await res.json();
     state.documents = data.documents || [];
   } catch (err) {
     console.error(err);
     state.documents = [];
   }
-  // 校正当前文档:无效则回退到第一篇(或 null)。
+  // Validate the current document: fall back to the first one (or null).
   if (state.currentDocId && !state.documents.some((d) => d.id === state.currentDocId)) {
     state.currentDocId = null;
   }
@@ -549,7 +960,12 @@ async function fetchTree({ keepSelection = true } = {}) {
   const res = await fetch("/api/tree");
   const data = await res.json();
   state.allNodes = data.nodes || [];
-  state.files = data.files || [];
+  // Filter files by the current workspace: state.files holds only this workspace's uploads,
+  // while state.allFiles keeps the full set. Unowned legacy files (null workspace_id) join none.
+  state.allFiles = data.files || [];
+  state.files = state.currentWorkspaceId
+    ? state.allFiles.filter((f) => f.workspace_id === state.currentWorkspaceId)
+    : state.allFiles;
   state.workDir = data.work_dir || "";
   state.nodes = nodesForDocument(state.currentDocId);
   rebuildIndexes();
@@ -599,192 +1015,6 @@ async function selectDocument(docId, { keepNode = false } = {}) {
   renderComposer();
 }
 
-async function fetchClaudeCodeTree(path, { keepSelection = false } = {}) {
-  const cleanPath = String(path || "").trim();
-  if (!cleanPath) return false;
-  const previousProject = keepSelection ? state.selectedProjectId : null;
-  const previousNode = keepSelection ? state.selectedId : null;
-  try {
-    const res = await fetch(`/api/claude-code/tree?path=${encodeURIComponent(cleanPath)}`);
-    const data = await res.json();
-    if (!res.ok) {
-      window.alert(data.error || `Load failed (HTTP ${res.status})`);
-      return false;
-    }
-    state.allNodes = data.nodes || [];
-    state.files = [];
-    state.workDir = data.claude_dir || "";
-    state.ccPath = cleanPath;
-    localStorage.setItem("ccLastPath", cleanPath);
-    rebuildProjects();
-    if (keepSelection && previousProject && state.projects.some((p) => p.id === previousProject)) {
-      state.selectedProjectId = previousProject;
-    } else {
-      state.selectedProjectId = state.projects.length ? state.projects[0].id : null;
-    }
-    state.nodes = nodesForProject(state.selectedProjectId);
-    rebuildIndexes();
-    if (keepSelection && previousNode && state.nodeById.has(previousNode)) {
-      state.selectedId = previousNode;
-    } else {
-      state.selectedId = state.selectedProjectId;
-    }
-    state.parentId = state.selectedId;
-    render();
-    return true;
-  } catch (err) {
-    window.alert(`Load failed: ${err.message || err}`);
-    return false;
-  }
-}
-
-function snapshotMode() {
-  return {
-    allNodes: state.allNodes,
-    files: state.files,
-    workDir: state.workDir,
-    selectedProjectId: state.selectedProjectId,
-    selectedId: state.selectedId,
-    parentId: state.parentId,
-    ccPath: state.ccPath,
-  };
-}
-
-function restoreMode(snap) {
-  if (!snap) {
-    state.allNodes = [];
-    state.files = [];
-    state.workDir = "";
-    state.selectedProjectId = state.mode === "live" ? "__new__" : null;
-    state.selectedId = null;
-    state.parentId = null;
-    state.ccPath = "";
-    return;
-  }
-  state.allNodes = snap.allNodes || [];
-  state.files = snap.files || [];
-  state.workDir = snap.workDir || "";
-  state.selectedProjectId = snap.selectedProjectId ?? (state.mode === "live" ? "__new__" : null);
-  state.selectedId = snap.selectedId || null;
-  state.parentId = snap.parentId || null;
-  state.ccPath = snap.ccPath || "";
-}
-
-async function setMode(newMode) {
-  if (newMode !== "live" && newMode !== "claude_code") return;
-  if (newMode === state.mode) return;
-  // Save current snapshot
-  if (state.mode === "live") state.liveSnapshot = snapshotMode();
-  else state.ccSnapshot = snapshotMode();
-
-  state.mode = newMode;
-  document.body.classList.toggle("mode-claude_code", newMode === "claude_code");
-  document.body.classList.toggle("mode-live", newMode === "live");
-  if (els.modeLiveBtn) els.modeLiveBtn.classList.toggle("active", newMode === "live");
-  if (els.modeHistoryBtn) els.modeHistoryBtn.classList.toggle("active", newMode === "claude_code");
-  if (els.ccImportBtn) els.ccImportBtn.hidden = newMode !== "claude_code";
-
-  if (newMode === "live") {
-    restoreMode(state.liveSnapshot);
-    await fetchTree();
-  } else {
-    if (state.ccSnapshot && state.ccSnapshot.allNodes.length) {
-      restoreMode(state.ccSnapshot);
-      rebuildProjects();
-      state.nodes = nodesForProject(state.selectedProjectId);
-      rebuildIndexes();
-      render();
-    } else {
-      restoreMode(null);
-      rebuildProjects();
-      render();
-      promptImportClaudeCodePath();
-    }
-  }
-}
-
-async function promptImportClaudeCodePath() {
-  const last = localStorage.getItem("ccLastPath") || "";
-  const path = window.prompt("Enter a local project path\n(reads ~/.claude/projects/<slug>/ directly; each root conversation = one project)", last);
-  if (path === null) return;
-  const trimmed = path.trim();
-  if (!trimmed) return;
-  await fetchClaudeCodeTree(trimmed);
-}
-
-function rebuildProjects() {
-  const allById = new Map(state.allNodes.map((node) => [node.id, node]));
-  state.projects = state.allNodes
-    .filter((node) => !node.parent_id || !allById.has(node.parent_id))
-    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-  computeProjectStats(allById);
-}
-
-function computeProjectStats(allById) {
-  const childMap = new Map();
-  for (const node of state.allNodes) {
-    const parent = node.parent_id && allById.has(node.parent_id) ? node.parent_id : null;
-    if (!childMap.has(parent)) childMap.set(parent, []);
-    childMap.get(parent).push(node.id);
-  }
-  const stats = new Map();
-  for (const project of state.projects) {
-    let nodes = 0;
-    let leaves = 0;
-    const stack = [project.id];
-    const seen = new Set();
-    while (stack.length) {
-      const id = stack.pop();
-      if (seen.has(id)) continue;
-      seen.add(id);
-      nodes += 1;
-      const kids = childMap.get(id) || [];
-      if (kids.length === 0) leaves += 1;
-      for (const k of kids) stack.push(k);
-    }
-    stats.set(project.id, { nodes, leaves });
-  }
-  state.projectStats = stats;
-}
-
-function ensureSelectedProject(keepSelection) {
-  const valid = state.projects.some((project) => project.id === state.selectedProjectId);
-  if (state.mode === "live" && state.selectedProjectId === "__new__") return;
-  if (!keepSelection || !valid) {
-    if (state.mode === "live") {
-      state.selectedProjectId = "__new__";
-      localStorage.setItem("selectedProjectId", state.selectedProjectId);
-    } else {
-      state.selectedProjectId = state.projects.length ? state.projects[0].id : null;
-    }
-  }
-}
-
-function nodesForProject(projectId) {
-  if (!projectId || projectId === "__new__") return [];
-  const allByParent = new Map();
-  for (const node of state.allNodes) {
-    const key = node.parent_id || "__root__";
-    if (!allByParent.has(key)) allByParent.set(key, []);
-    allByParent.get(key).push(node);
-  }
-  const result = [];
-  const queue = [projectId];
-  const seen = new Set();
-  while (queue.length) {
-    const id = queue.shift();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    const node = state.allNodes.find((item) => item.id === id);
-    if (!node) continue;
-    result.push(node);
-    for (const child of allByParent.get(id) || []) {
-      queue.push(child.id);
-    }
-  }
-  return result.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-}
-
 function rebuildIndexes() {
   state.nodeById = new Map(state.nodes.map((node) => [node.id, node]));
   state.childrenByParent = new Map();
@@ -809,13 +1039,12 @@ function render() {
   renderSideTabs();
   renderNotePanel();
   renderComposer();
+  renderBreadcrumb();
   renderDocumentSelect();
   renderDirectionControls();
   renderBackendControls();
   renderWebSearchControls();
   renderHighlights();
-  const doc = currentDocument();
-  els.workspaceLabel.textContent = doc ? (doc.title || doc.original_name || "") : "";
   els.emptyState.classList.toggle("visible", state.nodes.length === 0);
 }
 
@@ -841,50 +1070,6 @@ function renderDocumentSelect() {
   els.documentSelect.replaceChildren(...options);
   els.documentSelect.value = state.currentDocId || "";
   if (els.docDeleteBtn) els.docDeleteBtn.disabled = !state.currentDocId;
-}
-
-function renderWorkspaceDrawer() {
-  if (!els.workspaceDrawer) return;
-  els.workspaceDrawer.classList.toggle("collapsed", !state.workspaceOpen);
-  els.workspaceToggleBtn.setAttribute("aria-label", state.workspaceOpen ? "Collapse Workspace" : "Expand Workspace");
-  els.workspaceToggleBtn.title = state.workspaceOpen ? "Collapse Workspace" : "Expand Workspace";
-}
-
-function setWorkspaceDrawerOpen(open) {
-  state.workspaceOpen = open;
-  localStorage.setItem("workspaceDrawerOpen", open ? "1" : "0");
-  renderWorkspaceDrawer();
-  setTimeout(() => {
-    renderMiniMap();
-  }, 180);
-}
-
-function renderProjectSelect() {
-  const isLive = state.mode === "live";
-  const currentValue = state.selectedProjectId || (isLive ? "__new__" : "");
-  const options = [];
-  if (isLive) {
-    const newOption = document.createElement("option");
-    newOption.value = "__new__";
-    newOption.textContent = "new session";
-    options.push(newOption);
-  } else if (!state.projects.length) {
-    const empty = document.createElement("option");
-    empty.value = "";
-    empty.textContent = state.ccPath ? "(no conversations)" : "Click 📥 to choose a project";
-    options.push(empty);
-  }
-  for (const project of state.projects) {
-    const option = document.createElement("option");
-    option.value = project.id;
-    const stats = state.projectStats && state.projectStats.get(project.id);
-    const suffix = stats ? `  ·  ${stats.nodes} nodes / ${stats.leaves} leaves` : "";
-    option.textContent = compact(project.title || project.prompt || "Untitled project", 30) + suffix;
-    options.push(option);
-  }
-  els.projectSelect.replaceChildren(...options);
-  els.projectSelect.value = currentValue;
-  els.projectSelect.classList.toggle("placeholder", isLive && currentValue === "__new__");
 }
 
 function layoutTree() {
@@ -1270,14 +1455,6 @@ function focusSelected() {
   fitTreeToView();
 }
 
-function boundsCenter() {
-  const bounds = treeBounds();
-  return {
-    x: bounds.x + bounds.w / 2 - NODE_W / 2,
-    y: bounds.y + bounds.h / 2 - NODE_H / 2,
-  };
-}
-
 function treeBounds() {
   if (!state.layout.size) return { x: 0, y: 0, w: NODE_W, h: NODE_H };
   const xs = [];
@@ -1621,94 +1798,6 @@ function renderNotePanel() {
   els.noteRendered.replaceChildren(rendered);
 }
 
-async function copyTextToClipboard(text) {
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // fall through to legacy path
-    }
-  }
-  // Legacy fallback that works on plain http (LAN access etc).
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.top = "0";
-  textarea.style.left = "0";
-  textarea.style.width = "1px";
-  textarea.style.height = "1px";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  const prevSelection = document.getSelection().rangeCount > 0
-    ? document.getSelection().getRangeAt(0)
-    : null;
-  textarea.focus();
-  textarea.select();
-  let ok = false;
-  try {
-    ok = document.execCommand("copy");
-  } catch {
-    ok = false;
-  }
-  document.body.removeChild(textarea);
-  if (prevSelection) {
-    const sel = document.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(prevSelection);
-  }
-  return ok;
-}
-
-function makeResumePill(node) {
-  const messageUuid = String(node.resume_message_uuid || "").trim();
-  if (!messageUuid) return null;
-  const pill = document.createElement("button");
-  pill.type = "button";
-  pill.className = "meta-pill resume-pill";
-  const shortMsg = messageUuid.slice(0, 8);
-  pill.textContent = `↻ resume @${shortMsg}…`;
-  pill.title = `Click: generate a new session file for this node and copy the resume command\n(creates branch-${shortMsg}-*.jsonl under ~/.claude/projects/)`;
-  pill.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    if (pill.disabled) return;
-    pill.disabled = true;
-    const original = pill.textContent;
-    pill.textContent = "Generating…";
-    try {
-      const res = await fetch("/api/claude-code/resume-from-node", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: state.ccPath, message_uuid: messageUuid }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        window.alert(data.error || `Generation failed (HTTP ${res.status})`);
-        return;
-      }
-      const command = data.command || `claude --resume ${data.session_id}`;
-      const ok = await copyTextToClipboard(command);
-      if (ok) {
-        pill.textContent = `Copied ✓ (chain ${data.chain_length})`;
-        pill.classList.add("copied");
-      } else {
-        window.prompt("Automatic copy failed — please copy manually:", command);
-        pill.textContent = original;
-      }
-    } catch (err) {
-      window.alert(`Generation failed: ${err.message || err}`);
-    } finally {
-      pill.disabled = false;
-      setTimeout(() => {
-        pill.textContent = original;
-        pill.classList.remove("copied");
-      }, 1800);
-    }
-  });
-  return pill;
-}
-
 function renderConversation() {
   const node = selectedNode();
   const disabled = !node;
@@ -1740,10 +1829,7 @@ function renderConversation() {
     return span;
   });
 
-  if (state.mode === "claude_code") {
-    const pill = makeResumePill(node);
-    if (pill) metaEls.push(pill);
-  } else if (node.backend) {
+  if (node.backend) {
     const backendPill = document.createElement("span");
     backendPill.className = `meta-pill backend-${node.backend}`;
     backendPill.textContent = node.backend === "claude" ? "Claude" : "Codex";
@@ -1890,14 +1976,7 @@ function renderWorkspaceFiles() {
   els.workspaceFileList.replaceChildren(...rows);
 }
 
-function closeWorkspacePreview() {
-  state.workspacePreviewFile = null;
-  els.workspacePreview.hidden = true;
-  els.workspacePreviewBody.replaceChildren();
-}
-
 function renderWorkspacePreviewShell(file) {
-  state.workspacePreviewFile = file;
   els.workspacePreview.hidden = false;
   els.workspacePreviewTitle.textContent = file.name;
   els.workspacePreviewMeta.textContent = [file.path, formatBytes(file.size), file.mime || ""].filter(Boolean).join(" · ");
@@ -2067,6 +2146,7 @@ async function uploadDroppedFiles(fileList) {
   if (!files.length) return;
   const form = new FormData();
   for (const file of files) form.append("files", file);
+  if (state.currentWorkspaceId) form.append("workspace_id", state.currentWorkspaceId);
   try {
     const res = await fetch("/api/upload", { method: "POST", body: form });
     const data = await res.json();
@@ -2145,22 +2225,6 @@ async function sendPrompt(event) {
     state.sending = false;
     renderComposer();
   }
-}
-
-async function uploadFiles() {
-  const files = [...els.fileInput.files];
-  if (!files.length) return;
-  const form = new FormData();
-  for (const file of files) form.append("files", file);
-  els.fileInput.value = "";
-  const res = await fetch("/api/upload", { method: "POST", body: form });
-  const data = await res.json();
-  if (!res.ok) {
-    window.alert(data.error || "Upload failed");
-    return;
-  }
-  for (const file of data.files || []) state.fileIds.add(file.id);
-  await fetchTree();
 }
 
 async function saveNote() {
@@ -2393,24 +2457,7 @@ async function appendSelectionToNote() {
   await fetchTree();
 }
 
-async function patchSelected(payload) {
-  const node = selectedNode();
-  if (!node) return;
-  const res = await fetch(`/api/nodes/${node.id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const data = await res.json();
-    window.alert(data.error || "Update failed");
-    return;
-  }
-  await fetchTree();
-}
-
 async function deleteSelected() {
-  if (state.mode === "claude_code") return;
   const node = selectedNode();
   if (!node) return;
   const children = state.childrenByParent.get(node.id) || [];
@@ -2495,19 +2542,6 @@ function stopSidePanelResize() {
   localStorage.setItem(SIDE_WIDTH_KEY, String(Math.round(state.sidePanelWidth)));
 }
 
-function startNewProject() {
-  state.selectedProjectId = "__new__";
-  state.parentId = null;
-  state.selectedId = null;
-  state.workspaceFiles = [];
-  state.nodes = [];
-  localStorage.setItem("selectedProjectId", state.selectedProjectId);
-  rebuildIndexes();
-  render();
-  fetchWorkspaceFiles().catch(console.error);
-  els.promptInput.focus();
-}
-
 function pollIfNeeded() {
   const active = state.allNodes.some((node) => node.status === "running" || node.status === "queued");
   if (active) {
@@ -2517,7 +2551,7 @@ function pollIfNeeded() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  PDF 阅读 + 文字选择 + 高亮
+//  PDF rendering + text selection + highlights
 // ══════════════════════════════════════════════════════════════════════
 
 const HL_COLORS = ["yellow", "green", "blue", "pink"];
@@ -2542,7 +2576,7 @@ async function loadPdf() {
   try {
     const task = window.pdfjsLib.getDocument({ url: `/api/documents/${docId}/file` });
     const pdf = await task.promise;
-    if (token !== state.pdfRenderToken) return; // 期间切换了文档
+    if (token !== state.pdfRenderToken) return; // the document changed while rendering
     state.pdfDoc = pdf;
     for (let n = 1; n <= pdf.numPages; n += 1) {
       const pageEl = document.createElement("div");
@@ -2572,6 +2606,10 @@ async function renderPdfPage(pdf, pageNum, pageEl, token) {
   state.pdfPageViewports.set(pageNum - 1, { width: viewport.width, height: viewport.height });
   pageEl.style.width = `${viewport.width}px`;
   pageEl.style.height = `${viewport.height}px`;
+  // PDF.js 3.x positions text-layer divs with calc(var(--scale-factor) * …);
+  // without this variable those calcs collapse to 0 and text selection /
+  // highlight anchoring break. Keep it equal to the viewport scale.
+  pageEl.style.setProperty("--scale-factor", String(viewport.scale));
 
   const canvas = document.createElement("canvas");
   canvas.className = "pdf-canvas";
@@ -2598,7 +2636,7 @@ async function renderPdfPage(pdf, pageNum, pageEl, token) {
     const textContent = await page.getTextContent();
     if (token !== state.pdfRenderToken) return;
     await window.pdfjsLib.renderTextLayer({
-      textContent,
+      textContentSource: textContent,
       container: textLayer,
       viewport,
       textDivs: [],
@@ -2621,7 +2659,7 @@ function setPdfScale(scale) {
   loadPdf();
 }
 
-// ── 选择 → 浮动工具条 ──────────────────────────────────────────────────
+// ── Text selection → floating toolbar ────────────────────────────────────
 
 function pageElForNode(node) {
   const el = node && node.nodeType === 1 ? node : node && node.parentElement;
@@ -2629,7 +2667,7 @@ function pageElForNode(node) {
 }
 
 function handlePdfMouseUp() {
-  // 延后到选择稳定后再读取。
+  // Defer until the selection has settled before reading it.
   setTimeout(() => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) {
@@ -2651,7 +2689,7 @@ function handlePdfMouseUp() {
     const pageRect = pageEl.getBoundingClientRect();
     const rects = [];
     for (const r of range.getClientRects()) {
-      // 只保留落在该页内的片段。
+      // Keep only the rects that fall within this page.
       const cx = r.left + r.width / 2;
       const cy = r.top + r.height / 2;
       if (cx < pageRect.left || cx > pageRect.right || cy < pageRect.top || cy > pageRect.bottom) continue;
@@ -2733,13 +2771,13 @@ function askFromSelection() {
   els.promptInput.focus();
 }
 
-// ── 高亮叠加层渲染 ─────────────────────────────────────────────────────
+// ── Highlight overlay rendering ──────────────────────────────────────────
 
 function renderHighlights() {
   if (!state.pdfDoc) return;
   const pages = new Set(state.highlights.map((h) => h.page));
   for (const page of pages) drawHighlightsForPage(page);
-  // 也要清掉已无高亮的页。
+  // Also clear pages that no longer have any highlights.
   if (els.pdfPages) {
     els.pdfPages.querySelectorAll(".pdf-page").forEach((pageEl) => {
       const page = Number(pageEl.dataset.page);
@@ -2855,7 +2893,7 @@ async function deleteActiveHighlight() {
   }
 }
 
-// ── 面板显隐 / 宽度 ────────────────────────────────────────────────────
+// ── Pane show/hide and width ─────────────────────────────────────────────
 
 function setPaneOpen(pane, open) {
   state.paneOpen[pane] = open;
@@ -2874,7 +2912,7 @@ function renderPanes() {
     if (map[key]) map[key].classList.toggle("collapsed", !open);
     if (toggles[key]) toggles[key].classList.toggle("active", open);
   }
-  // 两侧的拖拽手柄只在两边都展开时才有意义。
+  // The side resize handles only make sense when both adjacent panes are open.
   if (els.pdfResizeHandle) els.pdfResizeHandle.style.display = state.paneOpen.pdf && state.paneOpen.tree ? "" : "none";
   if (els.sideResizeHandle) els.sideResizeHandle.style.display = state.paneOpen.chat && (state.paneOpen.tree || state.paneOpen.pdf) ? "" : "none";
 }
@@ -2906,33 +2944,24 @@ function stopPdfResize() {
 }
 
 async function uploadPdf(file) {
-  if (!file) return;
+  if (!file || !state.currentWorkspaceId) return;
+  const wsId = state.currentWorkspaceId;
   const form = new FormData();
   form.append("file", file);
+  form.append("workspace_id", wsId);
   try {
     const res = await fetch("/api/documents", { method: "POST", body: form });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || data.error || "Upload failed");
-    await fetchDocuments();
-    await selectDocument(data.document.id);
-  } catch (err) {
-    window.alert(err.message);
-  }
-}
-
-async function deleteCurrentDocument() {
-  const doc = currentDocument();
-  if (!doc) return;
-  if (!window.confirm(`Delete "${doc.title || doc.original_name}"?\nAll of its highlights and question nodes will be deleted too, and this can't be undone.`)) return;
-  try {
-    const res = await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || data.error || "Delete failed");
+    await fetchWorkspaces();
+    if (state.view === "reader") {
+      // Adding a PDF from inside the reader → open it immediately.
+      navigate("reader", { wsId, docId: data.document.id });
+    } else {
+      // Adding a PDF from the workspace page → stay on the list and refresh.
+      await fetchWorkspaceDetail(wsId);
+      refreshCurrentScreen();
     }
-    state.currentDocId = null;
-    await fetchDocuments();
-    await selectDocument(state.currentDocId);
   } catch (err) {
     window.alert(err.message);
   }
@@ -3033,21 +3062,40 @@ function wireEvents() {
       renderWebSearchControls();
     });
   }
-  // ── 文档选择 / 上传 / 删除 ──
-  els.documentSelect.addEventListener("change", () => {
-    const value = els.documentSelect.value;
-    if (!value) return;
-    selectDocument(value).catch(console.error);
-  });
+  // ── Navigation / home / workspace detail ──
+  window.addEventListener("hashchange", () => applyRoute().catch(console.error));
+  if (els.homeBtn) els.homeBtn.addEventListener("click", () => navigate("home"));
+  if (els.homeNewBtn) {
+    els.homeNewBtn.addEventListener("click", async () => {
+      const title = window.prompt("New workspace name");
+      if (title == null) return;
+      const created = await createWorkspace(title);
+      if (created) navigate("workspace", { wsId: created.id });
+    });
+  }
+  if (els.wsRenameBtn) {
+    els.wsRenameBtn.addEventListener("click", () => {
+      const ws = currentWorkspace() || state.wsDetail.workspace;
+      if (ws) renameWorkspace(ws).catch(console.error);
+    });
+  }
+  if (els.wsAddPdfBtn) els.wsAddPdfBtn.addEventListener("click", () => els.docUploadInput.click());
+
+  // ── Document upload (one hidden input, shared by the workspace page and the reader's empty state) ──
+  if (els.documentSelect) {
+    els.documentSelect.addEventListener("change", () => {
+      const value = els.documentSelect.value;
+      if (value) navigate("reader", { wsId: state.currentWorkspaceId, docId: value });
+    });
+  }
   els.docUploadInput.addEventListener("change", () => {
     const file = els.docUploadInput.files && els.docUploadInput.files[0];
     els.docUploadInput.value = "";
     if (file) uploadPdf(file).catch(console.error);
   });
   if (els.pdfEmptyUploadBtn) els.pdfEmptyUploadBtn.addEventListener("click", () => els.docUploadInput.click());
-  els.docDeleteBtn.addEventListener("click", () => deleteCurrentDocument().catch(console.error));
 
-  // ── PDF 缩放 / 选择 / 高亮 ──
+  // ── PDF zoom / selection / highlights ──
   els.pdfZoomInBtn.addEventListener("click", () => setPdfScale(state.pdfScale * 1.15));
   els.pdfZoomOutBtn.addEventListener("click", () => setPdfScale(state.pdfScale / 1.15));
   els.pdfPages.addEventListener("mouseup", handlePdfMouseUp);
@@ -3097,7 +3145,7 @@ function wireEvents() {
     }
   });
 
-  // ── 面板显隐 / PDF 宽度拖拽 ──
+  // ── Pane show/hide and PDF-width drag ──
   els.togglePdfBtn.addEventListener("click", () => setPaneOpen("pdf", !state.paneOpen.pdf));
   els.toggleTreeBtn.addEventListener("click", () => setPaneOpen("tree", !state.paneOpen.tree));
   els.toggleChatBtn.addEventListener("click", () => setPaneOpen("chat", !state.paneOpen.chat));
@@ -3118,9 +3166,7 @@ function wireEvents() {
     els.promptInput.focus();
   });
   els.refreshBtn.addEventListener("click", () => {
-    fetchDocuments()
-      .then(() => Promise.all([fetchTree(), fetchHighlights()]))
-      .catch(console.error);
+    applyRoute().catch(console.error);
   });
 
   if (els.miniMap) {
@@ -3219,18 +3265,27 @@ function wireEvents() {
 
 initSidePanelWidth();
 initPdfPaneWidth();
-document.body.classList.add("mode-live");
 wireEvents();
 renderPanes();
 
 (async () => {
   try {
-    await fetchDocuments();
-    renderDocumentSelect();
-    await selectDocument(state.currentDocId, { keepNode: true });
-    if (state.nodes.length) focusSelected();
+    // With no hash, restore the last location you were at; otherwise default to home.
+    if (!location.hash) {
+      let last = "#/";
+      try {
+        last = localStorage.getItem("lastRoute") || "#/";
+      } catch {}
+      if (last && last !== "#/") {
+        location.hash = last; // triggers hashchange → applyRoute
+        return;
+      }
+    }
+    await applyRoute();
+    if (state.view === "reader" && state.nodes.length) focusSelected();
   } catch (err) {
-    window.alert(err.message);
+    console.error(err);
+    navigate("home");
   }
 })();
 

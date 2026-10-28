@@ -1,4 +1,4 @@
-"""/api/ask 对 enable_web_search 的解析:缺省回落到配置,显式则透传。"""
+"""How /api/ask resolves enable_web_search: fall back to config when omitted, pass through when explicit."""
 from __future__ import annotations
 
 import app.routes as routes

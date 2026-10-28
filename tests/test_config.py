@@ -1,4 +1,4 @@
-"""ENABLE_WEB_SEARCH 环境变量解析。"""
+"""Parsing of the ENABLE_WEB_SEARCH environment variable."""
 from __future__ import annotations
 
 import importlib

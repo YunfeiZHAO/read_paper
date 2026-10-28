@@ -1,4 +1,6 @@
-"""应用工厂:组装 FastAPI app(静态目录挂到仓库根 static/)、建库、注册路由。"""
+"""Application factory: build the FastAPI app, mount the repo-root static/ directory,
+create the database, and register the routes.
+"""
 from __future__ import annotations
 
 from fastapi import FastAPI

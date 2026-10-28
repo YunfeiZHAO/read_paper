@@ -1,4 +1,4 @@
-"""把某个节点的整棵子树导出为 Markdown。"""
+"""Export a node's entire subtree as Markdown."""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional

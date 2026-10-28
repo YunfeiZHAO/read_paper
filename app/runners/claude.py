@@ -1,4 +1,4 @@
-"""Claude API 后端:agentic 循环,带 bash 工具与(可选)web_search 工具。"""
+"""Claude API backend: an agentic loop with a bash tool and an optional web_search tool."""
 from __future__ import annotations
 
 import asyncio
@@ -73,7 +73,7 @@ WEB_SEARCH_VARIANTS: List[Dict[str, Any]] = [
 
 
 def _claude_initial_tools(bash_tool: Dict[str, Any], enabled: bool) -> List[Dict[str, Any]]:
-    """开启联网搜索时附带首个 web_search 变体,否则只有 bash(无失败往返)。"""
+    """Include the first web_search variant when enabled, otherwise bash only (no failed round-trip)."""
     if enabled:
         return [bash_tool, WEB_SEARCH_VARIANTS[0]]
     return [bash_tool]

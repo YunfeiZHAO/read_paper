@@ -1,7 +1,10 @@
-"""SQLite 数据层:连接、schema、以及 nodes/files/account_usage 的 CRUD。"""
+"""SQLite data layer: connection management, schema, and CRUD for
+workspaces / documents / highlights / nodes / files.
+"""
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 import uuid
@@ -26,6 +29,26 @@ def resolve_stored_path(stored: str) -> str:
     if p.is_absolute():
         return stored
     return str(WORK_DIR / p)
+
+
+def delete_file_from_disk(stored: str) -> None:
+    """Remove a stored upload's on-disk directory (``uploads/<file_id>/``).
+
+    Each upload lives in its own ``UPLOAD_DIR/<file_id>/`` directory, so we remove
+    that whole directory rather than just the file. Guards against deleting anything
+    outside UPLOAD_DIR, and never raises if the path is already gone.
+    """
+    try:
+        resolved = Path(resolve_stored_path(stored)).resolve()
+        upload_root = UPLOAD_DIR.resolve()
+        file_dir = resolved.parent
+        # Only remove the per-file directory when it sits directly under UPLOAD_DIR.
+        if file_dir.parent == upload_root and file_dir != upload_root:
+            shutil.rmtree(file_dir, ignore_errors=True)
+        elif resolved.is_file():
+            resolved.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
 
 
 def ensure_dirs() -> None:
@@ -64,9 +87,6 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'queued',
                 backend TEXT NOT NULL DEFAULT 'codex',
                 enable_web_search INTEGER NOT NULL DEFAULT 0,
-                account_name TEXT,
-                account_path TEXT,
-                account_reason TEXT,
                 codex_session_id TEXT,
                 model TEXT,
                 cwd TEXT,
@@ -89,6 +109,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS files (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT,
                 original_name TEXT NOT NULL,
                 stored_name TEXT NOT NULL,
                 path TEXT NOT NULL,
@@ -96,23 +117,6 @@ def init_db() -> None:
                 size INTEGER NOT NULL,
                 text_excerpt TEXT,
                 created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS account_usage (
-                name TEXT PRIMARY KEY,
-                used_tokens INTEGER NOT NULL DEFAULT 0,
-                last_node_id TEXT,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS account_probe (
-                name TEXT PRIMARY KEY,
-                auth_file TEXT NOT NULL,
-                status TEXT NOT NULL,
-                checked_at TEXT NOT NULL,
-                duration_ms INTEGER NOT NULL DEFAULT 0,
-                error TEXT,
-                answer TEXT
             );
 
             CREATE TABLE IF NOT EXISTS node_workspace_files (
@@ -126,8 +130,22 @@ def init_db() -> None:
                 FOREIGN KEY(node_id) REFERENCES nodes(id)
             );
 
+            -- "workspace" in this table means a user project (a group of PDFs + a shared
+            -- file drawer). This is distinct from WORK_DIR / app/workspace.py / /api/workspace/*,
+            -- which is the AI's scratch directory.
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_opened_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT,
                 file_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 original_name TEXT NOT NULL,
@@ -136,6 +154,7 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_opened_at TEXT,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
                 FOREIGN KEY(file_id) REFERENCES files(id)
             );
 
@@ -158,6 +177,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at);
             CREATE INDEX IF NOT EXISTS idx_node_workspace_files_node_id ON node_workspace_files(node_id);
             CREATE INDEX IF NOT EXISTS idx_highlights_document_id ON highlights(document_id);
+            CREATE INDEX IF NOT EXISTS idx_workspaces_archived ON workspaces(archived);
+            -- Indexes on documents/files workspace_id are created further below, AFTER the
+            -- ALTER migration that guarantees the column exists on old databases.
             """
         )
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()}
@@ -173,17 +195,71 @@ def init_db() -> None:
             conn.execute("ALTER TABLE nodes ADD COLUMN document_id TEXT")
         if "source_highlight_id" not in columns:
             conn.execute("ALTER TABLE nodes ADD COLUMN source_highlight_id TEXT")
-        # document_id 由上面的 ALTER 补齐,索引必须在列存在之后再建(兼容旧库)。
+        # document_id is added by the ALTER above; build its index only after the column
+        # exists (keeps old databases upgrading cleanly).
         conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_document_id ON nodes(document_id)")
+
+        # Backfill the workspace_id column (old databases lacked it on documents/files).
+        doc_columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "workspace_id" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN workspace_id TEXT")
+        file_columns = {row["name"] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+        if "workspace_id" not in file_columns:
+            conn.execute("ALTER TABLE files ADD COLUMN workspace_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace_id ON files(workspace_id)")
+
+        # Attach any orphaned documents/files (no workspace yet) to a "Default" workspace, so
+        # existing PDFs survive the introduction of the workspace layer and the home page has content.
+        orphan_doc = conn.execute(
+            "SELECT 1 FROM documents WHERE workspace_id IS NULL LIMIT 1"
+        ).fetchone()
+        orphan_file = conn.execute(
+            "SELECT 1 FROM files WHERE workspace_id IS NULL LIMIT 1"
+        ).fetchone()
+        if orphan_doc or orphan_file:
+            default_id = _ensure_default_workspace(conn)
+            conn.execute(
+                "UPDATE documents SET workspace_id = ? WHERE workspace_id IS NULL",
+                (default_id,),
+            )
+            conn.execute(
+                "UPDATE files SET workspace_id = ? WHERE workspace_id IS NULL",
+                (default_id,),
+            )
+
+
+def _ensure_default_workspace(conn: sqlite3.Connection) -> str:
+    """Return a default workspace id, creating one if none exists (used during migration/backfill)."""
+    row = conn.execute(
+        "SELECT id FROM workspaces ORDER BY created_at LIMIT 1"
+    ).fetchone()
+    if row:
+        return str(row["id"])
+    ws_id = uuid.uuid4().hex
+    created_at = now_iso()
+    conn.execute(
+        """
+        INSERT INTO workspaces (id, title, description, created_at, updated_at, last_opened_at)
+        VALUES (?, ?, '', ?, ?, ?)
+        """,
+        (ws_id, "Default", created_at, created_at, created_at),
+    )
+    return ws_id
 
 
 def public_node(row: sqlite3.Row) -> Dict[str, Any]:
+    """Turn a nodes row into the JSON-friendly dict the API returns.
+
+    JSON text columns are parsed into real lists, and the integer flags become booleans.
+    Legacy account_* columns (if present on an old database) are dropped defensively.
+    """
     node = dict(row)
     node["attachments"] = safe_json_loads(node.pop("attachments_json", "[]"), [])
     node["workspace_refs"] = safe_json_loads(node.pop("workspace_refs_json", "[]"), [])
     node["raw_events"] = safe_json_loads(node.pop("raw_events_json", "[]"), [])
-    for internal_key in ("account_name", "account_path", "account_reason"):
-        node.pop(internal_key, None)
+    for legacy_key in ("account_name", "account_path", "account_reason"):
+        node.pop(legacy_key, None)
     node["archived"] = bool(node["archived"])
     node["bookmarked"] = bool(node["bookmarked"])
     node["enable_web_search"] = bool(node.get("enable_web_search"))
@@ -287,9 +363,6 @@ def update_node(node_id: str, **fields: Any) -> None:
         "title",
         "answer",
         "status",
-        "account_name",
-        "account_path",
-        "account_reason",
         "codex_session_id",
         "model",
         "prompt_tokens",
@@ -374,6 +447,133 @@ def append_node_note(node_id: str, text: str) -> Dict[str, Any]:
     return node
 
 
+# ── workspaces (a user project: a group of PDFs + a shared file drawer) ────
+
+def public_workspace(row: sqlite3.Row) -> Dict[str, Any]:
+    ws = dict(row)
+    ws["archived"] = bool(ws.get("archived"))
+    return ws
+
+
+def create_workspace(title: str, description: str = "") -> Dict[str, Any]:
+    ws_id = uuid.uuid4().hex
+    created_at = now_iso()
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO workspaces (id, title, description, created_at, updated_at, last_opened_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (ws_id, (title or "Untitled workspace").strip(), description or "", created_at, created_at, created_at),
+        )
+    ws = get_workspace(ws_id)
+    if not ws:
+        raise RuntimeError("Failed to create workspace")
+    return ws
+
+
+def get_workspace(workspace_id: str) -> Optional[Dict[str, Any]]:
+    with DB_LOCK, db_connection() as conn:
+        row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
+    return public_workspace(row) if row else None
+
+
+def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
+    """List workspaces ordered by most-recently-opened, each annotated with its PDF count."""
+    where = "" if include_archived else "WHERE w.archived = 0"
+    with DB_LOCK, db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT w.*,
+                   (SELECT COUNT(*) FROM documents d
+                     WHERE d.workspace_id = w.id AND d.archived = 0) AS document_count
+            FROM workspaces w
+            {where}
+            ORDER BY COALESCE(w.last_opened_at, w.created_at) DESC
+            """
+        ).fetchall()
+    out = []
+    for row in rows:
+        ws = public_workspace(row)
+        ws["document_count"] = int(ws.get("document_count") or 0)
+        out.append(ws)
+    return out
+
+
+def update_workspace(workspace_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
+    allowed = {"title", "description", "archived"}
+    payload = {key: value for key, value in fields.items() if key in allowed}
+    if not payload:
+        return get_workspace(workspace_id)
+    payload["updated_at"] = now_iso()
+    assignments = ", ".join(f"{key} = ?" for key in payload.keys())
+    values = list(payload.values()) + [workspace_id]
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(f"UPDATE workspaces SET {assignments} WHERE id = ?", values)
+    return get_workspace(workspace_id)
+
+
+def touch_workspace(workspace_id: str) -> None:
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            "UPDATE workspaces SET last_opened_at = ?, updated_at = ? WHERE id = ?",
+            (now_iso(), now_iso(), workspace_id),
+        )
+
+
+def delete_workspace(workspace_id: str) -> Dict[str, Any]:
+    """Delete a workspace and all its PDFs (their trees, highlights, attachment rows) and shared files."""
+    with DB_LOCK, db_connection() as conn:
+        doc_ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM documents WHERE workspace_id = ?", (workspace_id,)
+            ).fetchall()
+        ]
+        # Collect stored paths for every file the workspace owns (shared files and the
+        # PDFs its documents point at) so we can remove them from disk after the commit.
+        file_paths = [
+            r["path"]
+            for r in conn.execute(
+                """
+                SELECT path FROM files
+                WHERE workspace_id = ?
+                   OR id IN (SELECT file_id FROM documents WHERE workspace_id = ?)
+                """,
+                (workspace_id, workspace_id),
+            ).fetchall()
+        ]
+        node_count = 0
+        for doc_id in doc_ids:
+            node_count += conn.execute(
+                "SELECT COUNT(*) AS c FROM nodes WHERE document_id = ?", (doc_id,)
+            ).fetchone()["c"]
+            conn.execute("DELETE FROM highlights WHERE document_id = ?", (doc_id,))
+            conn.execute(
+                "DELETE FROM node_workspace_files WHERE node_id IN (SELECT id FROM nodes WHERE document_id = ?)",
+                (doc_id,),
+            )
+            conn.execute("DELETE FROM nodes WHERE document_id = ?", (doc_id,))
+        conn.execute(
+            "DELETE FROM files WHERE workspace_id = ? OR id IN (SELECT file_id FROM documents WHERE workspace_id = ?)",
+            (workspace_id, workspace_id),
+        )
+        conn.execute("DELETE FROM documents WHERE workspace_id = ?", (workspace_id,))
+        conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+    for stored in file_paths:
+        delete_file_from_disk(stored)
+    return {"deleted_documents": len(doc_ids), "deleted_nodes": int(node_count)}
+
+
+def list_files_for_workspace(workspace_id: str) -> List[Dict[str, Any]]:
+    with DB_LOCK, db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM files WHERE workspace_id = ? ORDER BY created_at DESC",
+            (workspace_id,),
+        ).fetchall()
+    return [_resolve_file_row(row) for row in rows]
+
+
 # ── documents / highlights ──────────────────────────────────────────────
 
 def public_document(row: sqlite3.Row) -> Dict[str, Any]:
@@ -389,18 +589,26 @@ def public_highlight(row: sqlite3.Row) -> Dict[str, Any]:
     return item
 
 
-def create_document(file_id: str, title: str, original_name: str, num_pages: Optional[int]) -> Dict[str, Any]:
+def create_document(
+    file_id: str,
+    title: str,
+    original_name: str,
+    num_pages: Optional[int],
+    workspace_id: Optional[str] = None,
+) -> Dict[str, Any]:
     if not get_file(file_id):
         raise ValueError("File does not exist")
+    if workspace_id and not get_workspace(workspace_id):
+        raise ValueError("Workspace does not exist")
     doc_id = uuid.uuid4().hex
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:
         conn.execute(
             """
-            INSERT INTO documents (id, file_id, title, original_name, num_pages, created_at, updated_at, last_opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (id, workspace_id, file_id, title, original_name, num_pages, created_at, updated_at, last_opened_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (doc_id, file_id, title or original_name, original_name, num_pages, created_at, created_at, created_at),
+            (doc_id, workspace_id, file_id, title or original_name, original_name, num_pages, created_at, created_at, created_at),
         )
     doc = get_document(doc_id)
     if not doc:
@@ -414,11 +622,18 @@ def get_document(document_id: str) -> Optional[Dict[str, Any]]:
     return public_document(row) if row else None
 
 
-def list_documents() -> List[Dict[str, Any]]:
+def list_documents(workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM documents WHERE archived = 0 ORDER BY COALESCE(last_opened_at, created_at) DESC"
-        ).fetchall()
+        if workspace_id:
+            rows = conn.execute(
+                "SELECT * FROM documents WHERE archived = 0 AND workspace_id = ? "
+                "ORDER BY COALESCE(last_opened_at, created_at) DESC",
+                (workspace_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM documents WHERE archived = 0 ORDER BY COALESCE(last_opened_at, created_at) DESC"
+            ).fetchall()
     return [public_document(row) for row in rows]
 
 
@@ -438,7 +653,11 @@ def touch_document(document_id: str, num_pages: Optional[int] = None) -> None:
 
 
 def delete_document(document_id: str) -> Dict[str, Any]:
+    file_paths: List[str] = []
     with DB_LOCK, db_connection() as conn:
+        doc = conn.execute(
+            "SELECT file_id FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
         conn.execute("DELETE FROM highlights WHERE document_id = ?", (document_id,))
         conn.execute(
             "DELETE FROM node_workspace_files WHERE node_id IN (SELECT id FROM nodes WHERE document_id = ?)",
@@ -449,6 +668,22 @@ def delete_document(document_id: str) -> Dict[str, Any]:
         ).fetchone()["c"]
         conn.execute("DELETE FROM nodes WHERE document_id = ?", (document_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        # Remove the backing PDF file too, unless some other document still points at it.
+        file_id = doc["file_id"] if doc else None
+        if file_id:
+            still_used = conn.execute(
+                "SELECT 1 FROM documents WHERE file_id = ? LIMIT 1", (file_id,)
+            ).fetchone()
+            if not still_used:
+                file_paths = [
+                    r["path"]
+                    for r in conn.execute(
+                        "SELECT path FROM files WHERE id = ?", (file_id,)
+                    ).fetchall()
+                ]
+                conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    for stored in file_paths:
+        delete_file_from_disk(stored)
     return {"deleted_nodes": int(node_count)}
 
 
@@ -532,26 +767,3 @@ def delete_highlight(highlight_id: str) -> bool:
     with DB_LOCK, db_connection() as conn:
         cur = conn.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
         return cur.rowcount > 0
-
-
-def add_account_usage(account_name: str, node_id: str, tokens: int) -> None:
-    if not account_name or tokens <= 0:
-        return
-    with DB_LOCK, db_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO account_usage (name, used_tokens, last_node_id, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                used_tokens = used_tokens + excluded.used_tokens,
-                last_node_id = excluded.last_node_id,
-                updated_at = excluded.updated_at
-            """,
-            (account_name, int(tokens), node_id, now_iso()),
-        )
-
-
-def account_usage_map() -> Dict[str, int]:
-    with DB_LOCK, db_connection() as conn:
-        rows = conn.execute("SELECT name, used_tokens FROM account_usage").fetchall()
-    return {row["name"]: int(row["used_tokens"]) for row in rows}

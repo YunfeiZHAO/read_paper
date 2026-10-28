@@ -1,191 +1,199 @@
-# 项目说明(新手上手)
+# Project guide (for newcomers)
 
-> 面向刚接触这个代码库的人。读完能建立整体心智模型,知道每块代码在哪、为什么这么设计。
+> For anyone new to this codebase. After reading it you'll have a mental model of the whole
+> thing: where each piece lives and why it's built the way it is.
 
-## 0. 这个仓库有两个独立部分
+## 0. This repo has two independent parts
 
-| 部分 | 位置 | 说明 |
-|------|------|------|
-| **Codex/Claude Tree QA**(本文主角) | 仓库根 `app.py` + `app/` + `templates/` + `static/` | 一个把问答组织成**树**的 Flask Web 应用 |
-| **treeflow CLI** | `cli/` | 完全独立的命令行工具,浏览本地 Claude Code / Codex 历史会话。**与 Web 应用没有代码依赖**,刚上手可忽略 |
+| Part | Location | What it is |
+|------|----------|------------|
+| **PDF Tree QA** (this guide's subject) | repo root: `app.py` + `app/` + `templates/` + `static/` | A FastAPI web app that organizes Q&A as a **tree** |
+| **treeflow CLI** | `cli/` | A fully standalone command-line tool for browsing local Claude Code / Codex session history. **No code dependency on the web app**; ignore it when getting started |
 
-两者只共享 git 历史和"把会话当树"的思路,不互相 import。
-
----
-
-## 1. 核心概念:把问答组织成「树」
-
-普通聊天是**一条线**:问 → 答 → 再问 → 再答。
-
-这个项目是**一棵树**:每个「提问 + 回答」是一个**节点(node)**,可以从**任意历史节点**分叉出新问题。
-
-```
-根问题:这篇论文讲什么?
-├─ 它的方法有什么创新?        ← 从根分叉
-│   └─ 和 XX 方法比呢?
-└─ 实验设置是怎样的?          ← 又从根分叉(与上面并列)
-    └─ 数据集多大?
-```
-
-**为什么这样设计**:读论文时常想「从摘要这个点分头深挖方法和实验」,各条探索路径互不干扰,都保留独立上下文。
-
-**关键机制**:每次提问时,系统沿当前节点一路上溯到根,把所有祖先的「问 + 答 + 附件 + workspace 引用」拼成一个完整 prompt 发给 AI(见 `app/prompts.py` 的 `build_codex_prompt`)。所以每次调用 AI 都是**全自包含**的,不依赖任何"会话记忆"——这也是能从任意节点自由分叉的根本原因。
+They share only git history and the "model conversations as a tree" idea; they never import
+each other.
 
 ---
 
-## 2. 一次提问的完整流转(最重要)
+## 1. Core idea: Q&A organized as a *tree*
 
-在网页上选后端、输入问题、点发送后:
+A normal chat is **one line**: ask → answer → ask → answer.
+
+This project is a **tree**: each "question + answer" is a **node**, and you can fork a new
+question from **any earlier node**.
 
 ```
-1. 前端 POST /api/ask
+Root: what is this paper about?
+├─ what's novel about its method?     ← forked from the root
+│   └─ how does it compare to XX?
+└─ what's the experimental setup?     ← also forked from the root (parallel branch)
+    └─ how big is the dataset?
+```
+
+**Why build it this way**: when reading a paper you often want to branch off one point in the
+abstract and dig into the method and the experiments separately — each path keeps its own
+independent context and doesn't interfere with the others.
+
+**Key mechanism**: on every question, the system walks from the current node up to the root and
+stitches every ancestor's "question + answer + attachments + workspace references" into one
+complete prompt for the LLM (see `build_codex_prompt` in `app/prompts.py`). So every LLM call is
+**fully self-contained** and relies on no server-side "chat memory" — which is exactly what lets
+you fork freely from any node.
+
+---
+
+## 2. The full flow of one question (most important)
+
+After you pick a backend, type a question, and hit send:
+
+```
+1. Frontend POSTs /api/ask
         ↓  app/routes.py: api_ask()
-2. create_node(...)          把节点写进 SQLite,状态 = queued
+2. create_node(...)          write the node to SQLite, status = queued
         ↓  app/db.py
-3. start_worker(node_id)     开一个后台线程跑 AI
+3. start_worker(node_id)     spawn a background thread to run the LLM
         ↓  app/runners/__init__.py
-4. 按节点的 backend 字段选 runner:
-     claude → app/runners/claude.py   (调 Anthropic API,带 bash + web_search 工具)
-     codex  → app/runners/codex.py    (shell 出 codex exec 子进程)
+4. pick a runner from the node's `backend` field:
+     claude → app/runners/claude.py   (Anthropic API, bash + web_search tools)
+     codex  → app/runners/codex.py    (shells out to `codex exec`)
         ↓
-5. runner 内部:
-     build_codex_prompt()           拼祖先上下文        (app/prompts.py)
-     workspace_snapshot()           运行前拍文件快照     (app/workspace.py)
-     循环调用 AI,期间:
-       - 每来一批事件就 update_node() 写进 raw_events_json  ← 前端轮询可见"实时"进度
-       - AI 要跑命令 → 在 instance/workspace/ 目录执行
-     record_workspace_changes()     运行后对比快照,归因产出文件
+5. inside the runner:
+     build_codex_prompt()           stitch the ancestor context     (app/prompts.py)
+     workspace_snapshot()           snapshot files before the run   (app/workspace.py)
+     loop the LLM, meanwhile:
+       - each batch of events → update_node() into raw_events_json  ← frontend polling sees "live" progress
+       - the LLM runs commands → executed in instance/workspace/
+     record_workspace_changes()     diff against the snapshot, attribute produced files
      update_node(status=done, answer=...)
         ↓
-6. 前端定期 GET /api/tree,看到状态变 done,渲染出回答
+6. the frontend periodically GETs /api/tree, sees status flip to done, and renders the answer
 ```
 
-**务必记住**:后端**不是**等 AI 答完才返回。`/api/ask` 立即返回(HTTP 202),AI 在后台线程跑,前端靠轮询 `/api/tree` 看进展。
+**Remember**: the backend does **not** wait for the LLM to finish before responding.
+`/api/ask` returns immediately (HTTP 202); the LLM runs in a background thread and the frontend
+polls `/api/tree` for progress.
 
 ---
 
-## 3. 两个后端
+## 3. The two backends
 
 | | Codex | Claude |
 |---|---|---|
-| 怎么调 | shell 出 `codex exec` 命令行子进程 | Anthropic Python SDK |
-| 需要什么 | `sub-pool-client` 包(租号) | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` |
-| 代码 | `app/runners/codex.py` | `app/runners/claude.py` |
-| 工具能力 | web search + 完整本机 exec | bash 工具 + (可选) web_search |
+| How it's called | shells out to the `codex exec` CLI subprocess | Anthropic Python SDK |
+| Requires | the `sub-pool-client` package (leases an account) | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_API_KEY` |
+| Code | `app/runners/codex.py` | `app/runners/claude.py` |
+| Tools | web search + full local exec | bash tool + (optional) web_search |
 
-两者产出的"事件流"由 `app/events.py` 统一解析(token 统计、工具计数、答案提取),所以前端无需关心用了哪个后端。
+Both produce an "event stream" parsed uniformly by `app/events.py` (token usage, tool counting,
+answer extraction), so the frontend doesn't care which backend ran.
 
-> 注:`sub-pool-client` 未安装时,Codex 后端会返回友好错误并提示切到 Claude;Claude 后端不受影响。
+> Note: when `sub-pool-client` isn't installed the Codex backend returns a friendly error and
+> suggests switching to Claude; the Claude backend is unaffected.
 
 ---
 
-## 4. 目录结构
+## 4. Directory layout
 
 ```
 read_paper/
-├── app.py                  # 瘦入口:app = create_app(); python app.py 启动
-├── app/                    # 后端包
-│   ├── __init__.py         # create_app() 应用工厂:建 Flask、建库、注册路由
-│   ├── config.py           # .env 加载、可选依赖导入、所有常量与路径
-│   ├── utils.py            # 纯函数:时间 / JSON / 文本辅助
-│   ├── db.py               # SQLite:连接、建表、nodes/files CRUD(数据骨架)
-│   ├── workspace.py        # 共享 workspace 目录的文件追踪与归因
-│   ├── prompts.py          # 把祖先链 + 附件拼成自包含 prompt(树的"灵魂")
-│   ├── events.py           # 事件流解析:token、工具数、答案、JSONL
+├── app.py                  # thin entry point: app = create_app(); `python app.py` to launch
+├── app/                    # backend package
+│   ├── __init__.py         # create_app() factory: build FastAPI, create DB, register routes
+│   ├── config.py           # .env loading, optional imports, all constants and paths
+│   ├── utils.py            # pure helpers: time / JSON / text
+│   ├── db.py               # SQLite: connection, schema, CRUD (the data backbone)
+│   ├── workspace.py        # tracking files in the shared workspace scratch dir
+│   ├── prompts.py          # stitch ancestor chain + attachments into a self-contained prompt (the "soul" of the tree)
+│   ├── events.py           # event-stream parsing: tokens, tool count, answer, JSONL
 │   ├── runners/
-│   │   ├── __init__.py     # start_worker:按 backend 选 runner,后台线程执行
-│   │   ├── codex.py        # Codex 后端
-│   │   └── claude.py       # Claude API 后端(agentic 循环)
-│   ├── uploads.py          # 用户上传附件落盘 + 文本片段缓存
-│   ├── export.py           # 把某节点子树导出为 Markdown
-│   ├── claude_history.py   # 只读导入本地 Claude Code 历史 + 合成 resume 会话
-│   └── routes.py           # 所有 HTTP 路由(Flask Blueprint)
-├── templates/index.html    # 单页外壳
+│   │   ├── __init__.py     # start_worker: pick a runner by backend, run in a background thread
+│   │   ├── codex.py        # Codex backend
+│   │   └── claude.py       # Claude API backend (agentic loop)
+│   ├── uploads.py          # persist user attachments + cache a text excerpt
+│   ├── export.py           # export a node's subtree as Markdown
+│   └── routes.py           # all HTTP routes (one FastAPI APIRouter)
+├── templates/index.html    # single-page shell
 ├── static/
-│   ├── app.js              # 前端全部逻辑(~2600 行原生 JS,SVG 画树,无框架)
+│   ├── app.js              # all frontend logic (vanilla JS, SVG tree, no framework)
 │   └── styles.css
-├── instance/               # 运行时数据(SQLite、workspace、上传)
+├── instance/               # runtime data (SQLite, workspace, uploads)
 │   ├── codex_qa.sqlite
-│   └── workspace/          # AI 可读写的共享临时目录
-│       └── uploads/        # 用户上传的附件
-└── cli/                    # 独立的 treeflow CLI(与上面无关)
+│   └── workspace/          # shared scratch dir the AI can read/write
+│       └── uploads/        # user-uploaded attachments
+└── cli/                    # standalone treeflow CLI (unrelated to the above)
 ```
 
-### 模块依赖方向(无环)
+### Module dependency direction (acyclic)
 
 ```
-config  ← 所有模块
-utils   ← db / workspace / prompts / uploads / claude_history
+config  ← every module
+utils   ← db / workspace / prompts / uploads
 db      ← workspace / prompts / export / uploads / runners / routes
 workspace / events / prompts ← runners / routes
-runners / uploads / export / claude_history ← routes
-routes  ← __init__(create_app 注册 blueprint)
+runners / uploads / export ← routes
+routes  ← __init__ (create_app registers the router)
 ```
 
 ---
 
-## 5. 数据模型(SQLite,见 `app/db.py` 的 `init_db`)
+## 5. Data model (SQLite; see `init_db` in `app/db.py`)
 
-| 表 | 作用 |
-|----|------|
-| `nodes` | 一行一个问答节点。`parent_id` 自引用形成树。存 prompt、answer、status(`queued`→`running`→`done`/`failed`)、token 用量、工具调用数、原始事件 JSON、每节点笔记、backend 等 |
-| `files` | 上传的附件,文本类缓存一段摘要片段 |
-| `node_workspace_files` | 记录每个节点运行时在 workspace 里新建/改动了哪些文件 |
-| `account_usage` / `account_probe` | 旧的按账号 token 记账,基本被 sub-pool 取代 |
+| Table | Role |
+|-------|------|
+| `workspaces` | a user project: a group of PDFs + a shared file drawer |
+| `documents` | one uploaded PDF; owns its highlights and its question tree |
+| `highlights` | saved PDF selections (normalized rects), optionally the source of a question |
+| `nodes` | one Q&A turn. `parent_id` self-reference forms the tree. Stores prompt, answer, status (`queued`→`running`→`done`/`failed`), token usage, tool-call count, raw event JSON, per-node notes, backend, etc. |
+| `files` | uploaded attachments; text-like files cache an excerpt |
+| `node_workspace_files` | which files a node's run created/changed under the workspace dir |
 
-**树就靠 `nodes.parent_id` 自引用**。`parent_id` 为 NULL 的是根节点。
+**The tree is just `nodes.parent_id` self-referencing.** A node with `parent_id` NULL is a root.
+See [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) for the full schema.
 
 ---
 
-## 6. 两个容易混淆的"文件"概念
+## 6. Two easily-confused "file" concepts
 
-| | 上传附件 | workspace 文件 |
+| | Uploaded attachment | Workspace file |
 |---|---|---|
-| 谁产生 | 用户主动上传给某个问题 | AI 运行时在 workspace 目录读写 |
-| 存哪 | `instance/workspace/uploads/<file_id>/` | `instance/workspace/` 下任意位置 |
-| 代码 | `app/uploads.py` | `app/workspace.py` |
-| 怎么归因 | 显式挂在节点的 `attachments_json` | 运行前后快照对比,写入 `node_workspace_files` |
+| Produced by | the user, attached to a question | the AI reading/writing under the workspace dir at run time |
+| Stored at | `instance/workspace/uploads/<file_id>/` | anywhere under `instance/workspace/` |
+| Code | `app/uploads.py` | `app/workspace.py` |
+| Attribution | explicit, in the node's `attachments_json` | before/after snapshot diff, written to `node_workspace_files` |
 
 ---
 
-## 7. 一个独立的只读功能:Claude Code 历史导入
+## 7. How to run it
 
-`app/claude_history.py` + 路由 `/api/claude-code/tree` 能直接解析本地
-`~/.claude/projects/<slug>/*.jsonl`,把一段 Claude Code 会话重建成树,显示在同一个 UI 里(前端"历史"模式)。
-
-`/api/claude-code/resume-from-node` 更进一步:它把某条(可能被遗弃的)分支写成一个**合成 session 文件**,让 `claude --resume <sid>` 能精确跳回那个点——这是 stock Claude Code 正常够不到的分支。此逻辑与 `cli/treeflow` 思路一致但各自独立。
-
----
-
-## 8. 怎么跑起来
-
-依赖用 **uv** 管理(`pyproject.toml` + `uv.lock`):
+Dependencies are managed with **uv** (`pyproject.toml` + `uv.lock`):
 
 ```bash
-uv sync                 # 安装 Claude 后端所需依赖
-uv sync --extra codex   # 需要 Codex 后端时再加这个(装 sub-pool-client)
-uv run python app.py    # 默认 http://127.0.0.1:8080
+uv sync                 # install deps for the Claude backend
+uv sync --extra codex   # add this when you need the Codex backend (installs sub-pool-client)
+uv run python app.py    # default http://127.0.0.1:8080
 ```
 
-只需在 `.env` 里配 Claude 凭证即可用 Claude 后端:
+Configure Claude credentials in `.env` to use the Claude backend:
 
 ```bash
-ANTHROPIC_BASE_URL=...      # 自建网关;或用官方 API 时改成 ANTHROPIC_API_KEY
+ANTHROPIC_BASE_URL=...      # custom gateway; or use ANTHROPIC_API_KEY for the official API
 ANTHROPIC_AUTH_TOKEN=...
 CLAUDE_API_MODEL=claude-sonnet-4-6
 ```
 
-打开网页后,顶部 `Codex | Claude` 切换按钮选 **Claude**,就能上传论文 PDF/文本提问了。
+Open the page, pick **Claude** with the `Codex | Claude` toggle in the top bar, then upload a
+paper PDF and start asking.
 
-> VSCode 里直接按 F5(见 `.vscode/launch.json`)也能启动,会自动读 `.env`。
+> You can also launch it from VSCode with F5 (see `.vscode/launch.json`); it reads `.env`
+> automatically.
 
 ---
 
-## 9. 建议的代码阅读顺序
+## 8. Suggested reading order
 
-1. `app/db.py` 的 `init_db()` — 先看建表 SQL,理解 `nodes` 表字段(树的数据骨架)
-2. `app/routes.py` — 所有 API 入口,重点 `api_ask`,看一遍就知道前端能干什么
-3. `app/prompts.py` 的 `build_codex_prompt` — 树结构的"灵魂"
-4. `app/runners/claude.py` 的 `run_loop()` — agentic 循环(调 AI → 跑工具 → 再调)
-5. 其余 `workspace.py` / `events.py` / `uploads.py` / `export.py` / `claude_history.py` 用到再看
-6. 前端 `static/app.js` — 用 SVG 画树,状态都在顶层 `state` 对象里
+1. `init_db()` in `app/db.py` — read the schema first to understand the `nodes` table (the tree's data backbone)
+2. `app/routes.py` — every API entry point; focus on `api_ask` to see what the frontend can do
+3. `build_codex_prompt` in `app/prompts.py` — the "soul" of the tree structure
+4. `run_loop()` in `app/runners/claude.py` — the agentic loop (call LLM → run tools → call again)
+5. the rest: `workspace.py` / `events.py` / `uploads.py` / `export.py` as needed
+6. the frontend `static/app.js` — draws the tree with SVG; all state lives in the top-level `state` object

@@ -1,4 +1,4 @@
-"""runner 侧的「是否带联网搜索工具」决策(纯函数,不触网)。"""
+"""The runners' "include a web-search tool?" decision (pure functions, no network)."""
 from __future__ import annotations
 
 from app.runners.claude import WEB_SEARCH_VARIANTS, _claude_initial_tools

@@ -1,30 +1,30 @@
-"""nodes.enable_web_search 的持久化、布尔化与迁移。"""
+"""Persistence, boolean coercion, and migration of nodes.enable_web_search."""
 from __future__ import annotations
 
 import sqlite3
 
 
 def test_create_node_persists_flag(fresh_db):
-    on = fresh_db.create_node(None, "开启", [], [], enable_web_search=True)
-    off = fresh_db.create_node(None, "关闭", [], [], enable_web_search=False)
+    on = fresh_db.create_node(None, "on", [], [], enable_web_search=True)
+    off = fresh_db.create_node(None, "off", [], [], enable_web_search=False)
 
     assert fresh_db.get_node(on["id"])["enable_web_search"] is True
     assert fresh_db.get_node(off["id"])["enable_web_search"] is False
 
 
 def test_default_flag_is_false(fresh_db):
-    node = fresh_db.create_node(None, "默认", [], [])
+    node = fresh_db.create_node(None, "default", [], [])
     assert fresh_db.get_node(node["id"])["enable_web_search"] is False
 
 
 def test_public_node_coerces_to_bool(fresh_db):
-    node = fresh_db.create_node(None, "强制布尔", [], [], enable_web_search=True)
+    node = fresh_db.create_node(None, "coerce", [], [], enable_web_search=True)
     value = fresh_db.get_node(node["id"])["enable_web_search"]
     assert value is True and isinstance(value, bool)
 
 
 def test_migration_adds_column(tmp_path, fresh_db):
-    """旧库缺列时 init_db 应补上,且旧行默认 0。"""
+    """init_db should add the missing column to an old database, defaulting old rows to 0."""
     legacy = tmp_path / "legacy.sqlite"
     conn = sqlite3.connect(legacy)
     conn.executescript(
@@ -55,3 +55,46 @@ def test_migration_adds_column(tmp_path, fresh_db):
     value = conn.execute("SELECT enable_web_search FROM nodes WHERE id = 'old1'").fetchone()[0]
     conn.close()
     assert value == 0
+
+
+def test_delete_document_removes_file_from_disk(fresh_db):
+    from pathlib import Path
+
+    from app import uploads
+
+    ws = fresh_db.create_workspace("ws")
+    saved = uploads.store_upload("paper.pdf", b"%PDF-1.4 data", "application/pdf", workspace_id=ws["id"])
+    doc = fresh_db.create_document(saved["id"], "Paper", "paper.pdf", 1, workspace_id=ws["id"])
+
+    on_disk = Path(fresh_db.resolve_stored_path(
+        fresh_db.get_file(saved["id"])["path"]
+    ))
+    assert on_disk.exists()
+
+    fresh_db.delete_document(doc["id"])
+
+    assert fresh_db.get_file(saved["id"]) is None
+    assert not on_disk.exists()
+    assert not on_disk.parent.exists()
+
+
+def test_delete_workspace_removes_files_from_disk(fresh_db):
+    from pathlib import Path
+
+    from app import uploads
+
+    ws = fresh_db.create_workspace("ws")
+    pdf = uploads.store_upload("paper.pdf", b"%PDF-1.4", "application/pdf", workspace_id=ws["id"])
+    shared = uploads.store_upload("notes.txt", b"hello", "text/plain", workspace_id=ws["id"])
+    fresh_db.create_document(pdf["id"], "Paper", "paper.pdf", 1, workspace_id=ws["id"])
+
+    pdf_dir = Path(fresh_db.resolve_stored_path(pdf["path"])).parent
+    shared_dir = Path(fresh_db.resolve_stored_path(shared["path"])).parent
+    assert pdf_dir.exists() and shared_dir.exists()
+
+    fresh_db.delete_workspace(ws["id"])
+
+    assert fresh_db.get_file(pdf["id"]) is None
+    assert fresh_db.get_file(shared["id"]) is None
+    assert not pdf_dir.exists()
+    assert not shared_dir.exists()

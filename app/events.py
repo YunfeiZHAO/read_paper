@@ -1,4 +1,6 @@
-"""Codex/Claude 事件流的解析:token 统计、工具计数、答案提取、JSONL 解析、存储裁剪。"""
+"""Parsing of the Codex/Claude event stream: token usage, tool counting, answer
+extraction, JSONL parsing, and trimming for storage.
+"""
 from __future__ import annotations
 
 import json

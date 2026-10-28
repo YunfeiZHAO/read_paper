@@ -1,48 +1,53 @@
-"""所有 HTTP 路由,挂在一个 FastAPI APIRouter 上,由 create_app() 注册。"""
+"""All HTTP routes, attached to a single FastAPI APIRouter and registered by create_app()."""
 from __future__ import annotations
 
 import mimetypes
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .config import (
     BACKENDS,
     BASE_DIR,
-    CLAUDE_PROJECTS_DIR,
     ENABLE_WEB_SEARCH,
     WORKSPACE_TEXT_PREVIEW_BYTES,
     WORK_DIR,
 )
-from .claude_history import claude_code_slug, read_claude_code_nodes, resume_from_node
 from .db import (
     DB_LOCK,
     append_node_note,
     create_document,
     create_highlight,
     create_node,
+    create_workspace,
     db_connection,
     delete_document,
     delete_highlight,
+    delete_workspace,
     get_document,
     get_file,
     get_highlight,
     get_node,
+    get_workspace,
     link_highlight_to_node,
     list_documents,
+    list_files_for_workspace,
     list_highlights,
+    list_workspaces,
     nodes_for_document,
     nodes_for_project,
     public_node,
     touch_document,
+    touch_workspace,
     update_highlight,
     update_node,
+    update_workspace,
 )
 from .export import export_subtree_markdown
 from .runners import start_worker
 from .uploads import store_upload
-from .utils import compact_title, now_iso, rows_to_dicts
+from .utils import compact_title, rows_to_dicts
 from .workspace import (
     normalize_workspace_refs,
     public_workspace_file,
@@ -66,13 +71,9 @@ def favicon() -> Response:
     return Response(status_code=204)
 
 
-@router.get("/api/health")
-def health() -> Dict[str, Any]:
-    return {"ok": True, "time": now_iso(), "auth_selection": "fixed_backend_auth"}
-
-
 @router.get("/api/tree")
 def api_tree() -> Dict[str, Any]:
+    """Return every node and file in the database (the frontend's initial tree load)."""
     with DB_LOCK, db_connection() as conn:
         node_rows = conn.execute("SELECT * FROM nodes ORDER BY created_at").fetchall()
         file_rows = conn.execute("SELECT * FROM files ORDER BY created_at DESC").fetchall()
@@ -83,42 +84,13 @@ def api_tree() -> Dict[str, Any]:
     }
 
 
-@router.get("/api/accounts")
-def api_accounts() -> Dict[str, Any]:
-    return {"managed_by_backend": True, "selection": "fixed"}
-
-
-@router.post("/api/claude-code/resume-from-node")
-async def api_claude_code_resume_from_node(request: Request) -> JSONResponse:
-    payload = await _json_body(request)
-    project_path = str(payload.get("path") or "").strip()
-    target_uuid = str(payload.get("message_uuid") or "").strip()
-    result, status = resume_from_node(project_path, target_uuid)
-    return JSONResponse(result, status_code=status)
-
-
-@router.get("/api/claude-code/tree")
-def api_claude_code_tree(path: str = "") -> JSONResponse:
-    project_path = (path or "").strip()
-    if not project_path:
-        raise HTTPException(status_code=400, detail="path is required")
-    slug = claude_code_slug(project_path)
-    cc_dir = CLAUDE_PROJECTS_DIR / slug
-    if not cc_dir.exists() or not cc_dir.is_dir():
-        return JSONResponse(
-            {"error": f"Claude Code history directory not found: {cc_dir}", "slug": slug}, status_code=404
-        )
-    try:
-        nodes = read_claude_code_nodes(cc_dir)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": f"Load failed: {exc}"}, status_code=500)
-    return JSONResponse(
-        {"nodes": nodes, "source_path": project_path, "claude_dir": str(cc_dir)}
-    )
-
-
 @router.post("/api/ask")
 async def api_ask(request: Request) -> JSONResponse:
+    """Create a queued Q&A node and kick off a background worker to answer it.
+
+    Returns 202 immediately with the created node; the answer streams in later and the
+    frontend polls /api/tree to see the node move queued → running → done/failed.
+    """
     payload = await _json_body(request)
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
@@ -139,7 +111,7 @@ async def api_ask(request: Request) -> JSONResponse:
 
     document_id = payload.get("document_id") or None
     source_highlight_id = payload.get("source_highlight_id") or None
-    # 从父节点继承 document_id(fork 出来的子节点仍属于同一篇 PDF)。
+    # Inherit document_id from the parent: a forked child still belongs to the same PDF.
     if not document_id and parent_id:
         parent = get_node(parent_id)
         if parent:
@@ -166,16 +138,23 @@ async def api_ask(request: Request) -> JSONResponse:
 
 
 @router.post("/api/upload")
-async def api_upload(files: Optional[List[UploadFile]] = File(None), file: Optional[List[UploadFile]] = File(None)) -> JSONResponse:
+async def api_upload(
+    files: Optional[List[UploadFile]] = File(None),
+    file: Optional[List[UploadFile]] = File(None),
+    workspace_id: str = Form(""),
+) -> JSONResponse:
     uploaded = files or file or []
     if not uploaded:
         raise HTTPException(status_code=400, detail="No file received")
+    workspace_id = (workspace_id or "").strip() or None
+    if workspace_id and not get_workspace(workspace_id):
+        raise HTTPException(status_code=400, detail="Workspace does not exist")
     saved_files = []
     for item in uploaded:
         if not item.filename:
             continue
         data = await item.read()
-        saved_files.append(store_upload(item.filename, data, item.content_type))
+        saved_files.append(store_upload(item.filename, data, item.content_type, workspace_id=workspace_id))
     return JSONResponse({"files": saved_files}, status_code=201)
 
 
@@ -187,22 +166,94 @@ def api_download_file(file_id: str) -> Any:
     return FileResponse(item["path"], filename=item["original_name"])
 
 
+# ── workspaces (a user project: a group of PDFs + a shared file drawer) ───
+
+
+@router.get("/api/workspaces")
+def api_list_workspaces(include_archived: str = "") -> Dict[str, Any]:
+    return {"workspaces": list_workspaces(include_archived=str(include_archived or "") == "1")}
+
+
+@router.post("/api/workspaces")
+async def api_create_workspace(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    description = str(payload.get("description") or "")
+    ws = create_workspace(title, description)
+    return JSONResponse({"workspace": ws}, status_code=201)
+
+
+@router.get("/api/workspaces/{workspace_id}")
+def api_get_workspace(workspace_id: str) -> Dict[str, Any]:
+    ws = get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace does not exist")
+    touch_workspace(workspace_id)
+    return {
+        "workspace": ws,
+        "documents": list_documents(workspace_id),
+        "files": list_files_for_workspace(workspace_id),
+    }
+
+
+@router.patch("/api/workspaces/{workspace_id}")
+async def api_patch_workspace(workspace_id: str, request: Request) -> Dict[str, Any]:
+    if not get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace does not exist")
+    payload = await _json_body(request)
+    fields: Dict[str, Any] = {}
+    if "title" in payload:
+        title = str(payload["title"] or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        fields["title"] = title
+    if "description" in payload:
+        fields["description"] = str(payload["description"] or "")
+    if "archived" in payload:
+        fields["archived"] = 1 if payload["archived"] else 0
+    ws = update_workspace(workspace_id, **fields)
+    return {"workspace": ws}
+
+
+@router.delete("/api/workspaces/{workspace_id}")
+def api_delete_workspace(workspace_id: str) -> Dict[str, Any]:
+    if not get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace does not exist")
+    result = delete_workspace(workspace_id)
+    return {"deleted": True, **result}
+
+
 # ── documents / highlights ──────────────────────────────────────────────
 
 
 @router.post("/api/documents")
-async def api_create_document(file: UploadFile = File(...), title: str = "", num_pages: Optional[int] = None) -> JSONResponse:
+async def api_create_document(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    num_pages: Optional[int] = Form(None),
+    workspace_id: str = Form(""),
+) -> JSONResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file received")
+    workspace_id = (workspace_id or "").strip() or None
+    if workspace_id and not get_workspace(workspace_id):
+        raise HTTPException(status_code=400, detail="Workspace does not exist")
     data = await file.read()
-    saved = store_upload(file.filename, data, file.content_type)
-    doc = create_document(saved["id"], title or saved["original_name"], saved["original_name"], num_pages)
+    saved = store_upload(file.filename, data, file.content_type, workspace_id=workspace_id)
+    try:
+        doc = create_document(
+            saved["id"], title or saved["original_name"], saved["original_name"], num_pages, workspace_id=workspace_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse({"document": doc}, status_code=201)
 
 
 @router.get("/api/documents")
-def api_list_documents() -> Dict[str, Any]:
-    return {"documents": list_documents()}
+def api_list_documents(workspace_id: str = "") -> Dict[str, Any]:
+    return {"documents": list_documents((workspace_id or "").strip() or None)}
 
 
 @router.get("/api/documents/{document_id}")
@@ -290,7 +341,7 @@ def api_delete_highlight(highlight_id: str) -> Dict[str, Any]:
     return {"deleted": True}
 
 
-# ── workspace (保留服务端能力;前端 PDF 模式已不主动调用) ──────────────────
+# ── workspace scratch dir (files the AI read/wrote under WORK_DIR; shown in the side tab) ──
 
 
 @router.get("/api/workspace/files")
@@ -461,7 +512,7 @@ def api_export(node_id: str) -> Response:
 
 
 async def _json_body(request: Request) -> Dict[str, Any]:
-    """宽容地解析 JSON 请求体,出错时回退为空 dict(对齐旧的 get_json(silent=True))。"""
+    """Parse the JSON request body leniently, falling back to an empty dict on error."""
     try:
         data = await request.json()
     except Exception:  # noqa: BLE001

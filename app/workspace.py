@@ -1,4 +1,6 @@
-"""共享 workspace 目录的文件追踪:快照、变更归因、对外视图。"""
+"""File tracking for the shared workspace scratch directory (WORK_DIR): before/after
+snapshots, attributing changed files to the node that produced them, and public views.
+"""
 from __future__ import annotations
 
 import mimetypes
@@ -74,10 +76,10 @@ def public_workspace_ref(path: Path) -> Dict[str, Any]:
 
 
 def resolve_workspace_file(value: str) -> Path:
-    """解析工作目录中的文件路径。
+    """Resolve a path inside the workspace directory to an absolute, validated Path.
 
-    支持相对路径(相对于WORK_DIR)和绝对路径,返回绝对路径。
-    这提供了向后兼容性和向前的可移植性。
+    Accepts relative (to WORK_DIR) or absolute input and always returns an absolute path,
+    rejecting anything that escapes the workspace root or does not point at an existing file.
     """
     raw = str(value or "").strip()
     if not raw:
@@ -92,14 +94,6 @@ def resolve_workspace_file(value: str) -> Path:
     if not path.exists() or not path.is_file():
         raise FileNotFoundError("File does not exist")
     return path
-
-
-def relative_workspace_path(abs_path: Path) -> str:
-    """转换绝对路径为相对于WORK_DIR的相对路径。方便迁移和备份。"""
-    try:
-        return abs_path.resolve().relative_to(WORK_DIR.resolve()).as_posix()
-    except ValueError:
-        raise ValueError(f"Path {abs_path} is not inside workspace {WORK_DIR}")
 
 
 def normalize_workspace_refs(values: Iterable[Any]) -> List[Dict[str, Any]]:
