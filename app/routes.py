@@ -101,17 +101,17 @@ async def api_claude_code_resume_from_node(request: Request) -> JSONResponse:
 def api_claude_code_tree(path: str = "") -> JSONResponse:
     project_path = (path or "").strip()
     if not project_path:
-        raise HTTPException(status_code=400, detail="path 不能为空")
+        raise HTTPException(status_code=400, detail="path is required")
     slug = claude_code_slug(project_path)
     cc_dir = CLAUDE_PROJECTS_DIR / slug
     if not cc_dir.exists() or not cc_dir.is_dir():
         return JSONResponse(
-            {"error": f"未找到 Claude Code 记录目录：{cc_dir}", "slug": slug}, status_code=404
+            {"error": f"Claude Code history directory not found: {cc_dir}", "slug": slug}, status_code=404
         )
     try:
         nodes = read_claude_code_nodes(cc_dir)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": f"读取失败：{exc}"}, status_code=500)
+        return JSONResponse({"error": f"Load failed: {exc}"}, status_code=500)
     return JSONResponse(
         {"nodes": nodes, "source_path": project_path, "claude_dir": str(cc_dir)}
     )
@@ -122,18 +122,18 @@ async def api_ask(request: Request) -> JSONResponse:
     payload = await _json_body(request)
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
-        raise HTTPException(status_code=400, detail="prompt 不能为空")
+        raise HTTPException(status_code=400, detail="prompt is required")
     parent_id = payload.get("parent_id") or None
     file_ids = payload.get("file_ids") or []
     if not isinstance(file_ids, list):
-        raise HTTPException(status_code=400, detail="file_ids 必须是数组")
+        raise HTTPException(status_code=400, detail="file_ids must be an array")
     workspace_refs_payload = payload.get("workspace_refs") or []
     if not isinstance(workspace_refs_payload, list):
-        raise HTTPException(status_code=400, detail="workspace_refs 必须是数组")
+        raise HTTPException(status_code=400, detail="workspace_refs must be an array")
     workspace_refs = normalize_workspace_refs(workspace_refs_payload)
     backend = str(payload.get("backend") or "codex").strip() or "codex"
     if backend not in BACKENDS:
-        raise HTTPException(status_code=400, detail=f"backend 必须是 {sorted(BACKENDS)} 之一")
+        raise HTTPException(status_code=400, detail=f"backend must be one of {sorted(BACKENDS)}")
     enable_web_search = payload.get("enable_web_search")
     enable_web_search = ENABLE_WEB_SEARCH if enable_web_search is None else bool(enable_web_search)
 
@@ -169,7 +169,7 @@ async def api_ask(request: Request) -> JSONResponse:
 async def api_upload(files: Optional[List[UploadFile]] = File(None), file: Optional[List[UploadFile]] = File(None)) -> JSONResponse:
     uploaded = files or file or []
     if not uploaded:
-        raise HTTPException(status_code=400, detail="没有收到文件")
+        raise HTTPException(status_code=400, detail="No file received")
     saved_files = []
     for item in uploaded:
         if not item.filename:
@@ -183,7 +183,7 @@ async def api_upload(files: Optional[List[UploadFile]] = File(None), file: Optio
 def api_download_file(file_id: str) -> Any:
     item = get_file(file_id)
     if not item:
-        raise HTTPException(status_code=404, detail="文件不存在")
+        raise HTTPException(status_code=404, detail="File does not exist")
     return FileResponse(item["path"], filename=item["original_name"])
 
 
@@ -193,7 +193,7 @@ def api_download_file(file_id: str) -> Any:
 @router.post("/api/documents")
 async def api_create_document(file: UploadFile = File(...), title: str = "", num_pages: Optional[int] = None) -> JSONResponse:
     if not file.filename:
-        raise HTTPException(status_code=400, detail="没有收到文件")
+        raise HTTPException(status_code=400, detail="No file received")
     data = await file.read()
     saved = store_upload(file.filename, data, file.content_type)
     doc = create_document(saved["id"], title or saved["original_name"], saved["original_name"], num_pages)
@@ -209,7 +209,7 @@ def api_list_documents() -> Dict[str, Any]:
 def api_get_document(document_id: str) -> Dict[str, Any]:
     doc = get_document(document_id)
     if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail="Document does not exist")
     touch_document(document_id)
     return {
         "document": doc,
@@ -221,7 +221,7 @@ def api_get_document(document_id: str) -> Dict[str, Any]:
 @router.delete("/api/documents/{document_id}")
 def api_delete_document(document_id: str) -> Dict[str, Any]:
     if not get_document(document_id):
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail="Document does not exist")
     result = delete_document(document_id)
     return {"deleted": True, **result}
 
@@ -230,10 +230,10 @@ def api_delete_document(document_id: str) -> Dict[str, Any]:
 def api_document_file(document_id: str) -> Any:
     doc = get_document(document_id)
     if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail="Document does not exist")
     item = get_file(doc["file_id"])
     if not item:
-        raise HTTPException(status_code=404, detail="PDF 文件丢失")
+        raise HTTPException(status_code=404, detail="PDF file is missing")
     return FileResponse(
         item["path"],
         media_type=item.get("mime") or "application/pdf",
@@ -244,18 +244,18 @@ def api_document_file(document_id: str) -> Any:
 @router.get("/api/documents/{document_id}/highlights")
 def api_list_highlights(document_id: str) -> Dict[str, Any]:
     if not get_document(document_id):
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail="Document does not exist")
     return {"highlights": list_highlights(document_id)}
 
 
 @router.post("/api/documents/{document_id}/highlights")
 async def api_create_highlight(document_id: str, request: Request) -> JSONResponse:
     if not get_document(document_id):
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail="Document does not exist")
     payload = await _json_body(request)
     rects = payload.get("rects") or []
     if not isinstance(rects, list):
-        raise HTTPException(status_code=400, detail="rects 必须是数组")
+        raise HTTPException(status_code=400, detail="rects must be an array")
     try:
         hl = create_highlight(
             document_id,
@@ -272,7 +272,7 @@ async def api_create_highlight(document_id: str, request: Request) -> JSONRespon
 @router.patch("/api/highlights/{highlight_id}")
 async def api_patch_highlight(highlight_id: str, request: Request) -> Dict[str, Any]:
     if not get_highlight(highlight_id):
-        raise HTTPException(status_code=404, detail="高亮不存在")
+        raise HTTPException(status_code=404, detail="Highlight does not exist")
     payload = await _json_body(request)
     fields: Dict[str, Any] = {}
     if "color" in payload:
@@ -286,7 +286,7 @@ async def api_patch_highlight(highlight_id: str, request: Request) -> Dict[str, 
 @router.delete("/api/highlights/{highlight_id}")
 def api_delete_highlight(highlight_id: str) -> Dict[str, Any]:
     if not delete_highlight(highlight_id):
-        raise HTTPException(status_code=404, detail="高亮不存在")
+        raise HTTPException(status_code=404, detail="Highlight does not exist")
     return {"deleted": True}
 
 
@@ -310,7 +310,7 @@ def api_workspace_content(path: str = "") -> Dict[str, Any]:
 
     kind = workspace_kind(resolved)
     if kind not in {"markdown", "text"}:
-        raise HTTPException(status_code=415, detail="该文件类型不支持文本预览")
+        raise HTTPException(status_code=415, detail="This file type does not support text preview")
 
     with resolved.open("rb") as file_obj:
         data = file_obj.read(WORKSPACE_TEXT_PREVIEW_BYTES + 1)
@@ -344,7 +344,7 @@ def api_workspace_file(path: str = "", download: str = "") -> Any:
 @router.patch("/api/nodes/{node_id}/note")
 async def api_patch_node_note(node_id: str, request: Request) -> Dict[str, Any]:
     if not get_node(node_id):
-        raise HTTPException(status_code=404, detail="节点不存在")
+        raise HTTPException(status_code=404, detail="Node does not exist")
     payload = await _json_body(request)
     note_md = payload.get("note_md", "")
     if not isinstance(note_md, str):
@@ -370,11 +370,11 @@ async def api_append_node_note(node_id: str, request: Request) -> Dict[str, Any]
 def api_project_notes(project_id: str) -> Dict[str, Any]:
     project = get_node(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="项目不存在")
+        raise HTTPException(status_code=404, detail="Project does not exist")
     notes = [
         {
             "id": node["id"],
-            "title": node.get("title") or "节点",
+            "title": node.get("title") or "Node",
             "note_md": node.get("note_md") or "",
             "created_at": node.get("created_at"),
             "updated_at": node.get("updated_at"),
@@ -382,13 +382,13 @@ def api_project_notes(project_id: str) -> Dict[str, Any]:
         for node in nodes_for_project(project_id)
         if str(node.get("note_md") or "").strip()
     ]
-    return {"project": {"id": project["id"], "title": project.get("title") or "项目"}, "notes": notes}
+    return {"project": {"id": project["id"], "title": project.get("title") or "Project"}, "notes": notes}
 
 
 @router.patch("/api/nodes/{node_id}")
 async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
     if not get_node(node_id):
-        raise HTTPException(status_code=404, detail="节点不存在")
+        raise HTTPException(status_code=404, detail="Node does not exist")
     payload = await _json_body(request)
     updates: Dict[str, Any] = {}
     if "title" in payload:
@@ -407,7 +407,7 @@ async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
 def api_delete_node(node_id: str) -> Dict[str, Any]:
     node = get_node(node_id)
     if not node:
-        raise HTTPException(status_code=404, detail="节点不存在")
+        raise HTTPException(status_code=404, detail="Node does not exist")
     with DB_LOCK, db_connection() as conn:
         count_row = conn.execute(
             """

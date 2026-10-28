@@ -93,5 +93,5 @@ def store_upload(original_name: str, data: bytes, content_type: Optional[str] = 
         )
     saved = get_file(file_id)
     if not saved:
-        raise RuntimeError("文件保存失败")
+        raise RuntimeError("Failed to save file")
     return saved

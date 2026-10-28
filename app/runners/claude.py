@@ -34,7 +34,7 @@ def _bash_env() -> dict:
 
 async def _run_claude_bash_tool(command: str, restart: bool) -> str:
     if restart:
-        return "(bash 工具没有持久会话，每次调用都在独立进程中执行；已忽略 restart)"
+        return "(the bash tool has no persistent session; each call runs in a separate process; restart ignored)"
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -50,11 +50,11 @@ async def _run_claude_bash_tool(command: str, restart: bool) -> str:
                 proc.kill()
             except ProcessLookupError:
                 pass
-            return f"[命令超时：超过 {CLAUDE_BASH_TIMEOUT_SECONDS} 秒未完成]"
+            return f"[command timed out: not finished within {CLAUDE_BASH_TIMEOUT_SECONDS} seconds]"
         output = stdout.decode("utf-8", errors="replace")
-        return output if output.strip() else "(命令无输出)"
+        return output if output.strip() else "(command produced no output)"
     except Exception as exc:  # noqa: BLE001
-        return f"[命令执行失败：{exc}]"
+        return f"[command execution failed: {exc}]"
 
 
 def _claude_web_search_query(block: Any) -> str:
@@ -100,12 +100,13 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
 
     client = anthropic.Anthropic()
     system_prompt = (
-        "你是 Codex 问答后端（本次由 Claude API 回答）。当前应用把对话组织成树状结构；"
-        "本次请求会从某个节点继承其祖先上下文，并产生一个新的子节点。"
-        f"你有一个 bash 工具，命令会在本地工作目录 {WORK_DIR} 下以完整权限执行（无沙箱），"
-        "可以用来读写文件、运行代码等。"
-        + ("也可以使用 web_search 工具搜索网络信息。" if web_search_enabled else "")
-        + "请基于继承路径、用户当前问题和上传附件作答。"
+        "You are the Q&A backend (answered this time by the Claude API). The app organizes "
+        "conversations as a tree; this request inherits the ancestor context of a node and "
+        "produces a new child node. "
+        f"You have a bash tool whose commands run with full permissions in the local working "
+        f"directory {WORK_DIR} (no sandbox), which you can use to read/write files, run code, etc. "
+        + ("You may also use the web_search tool to search the web. " if web_search_enabled else "")
+        + "Answer based on the inherited path, the user's current question, and any uploaded attachments."
     )
     bash_tool = {"type": "bash_20250124", "name": "bash"}
     web_search_variants = WEB_SEARCH_VARIANTS
@@ -142,10 +143,10 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
                     remaining = [v for v in web_search_variants if v["type"] not in web_search_tried]
                     if remaining:
                         tools = [bash_tool, remaining[0]]
-                        note = f"当前网关不支持 {current_type}，尝试改用 {remaining[0]['type']}：{exc}"
+                        note = f"The current gateway does not support {current_type}; trying {remaining[0]['type']} instead: {exc}"
                     else:
                         tools = [bash_tool]
-                        note = f"当前网关不支持任何 web_search 变体，已回退为仅使用 bash：{exc}"
+                        note = f"The current gateway supports no web_search variant; fell back to bash only: {exc}"
                     events.append(
                         {
                             "type": "item.completed",
@@ -189,7 +190,7 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
                             "item": {
                                 "id": getattr(block, "tool_use_id", f"note-{len(events)}"),
                                 "type": "web_search",
-                                "query": f"{result_count} 条结果" if result_count else "",
+                                "query": f"{result_count} results" if result_count else "",
                                 "status": "completed",
                             },
                         }
@@ -239,7 +240,7 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
 
-        error_message = error_message or f"超过最大工具调用轮数（{CLAUDE_MAX_TOOL_ITERATIONS}）仍未结束"
+        error_message = error_message or f"Exceeded the maximum number of tool-call rounds ({CLAUDE_MAX_TOOL_ITERATIONS}) without finishing"
 
     try:
         await asyncio.wait_for(run_loop(), timeout=CLAUDE_API_TIMEOUT_SECONDS)
@@ -254,7 +255,7 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
         update_node(
             node_id,
             status="failed",
-            error=f"Claude API 超时：超过 {CLAUDE_API_TIMEOUT_SECONDS} 秒未完成",
+            error=f"Claude API timed out: not finished within {CLAUDE_API_TIMEOUT_SECONDS} seconds",
             raw_events_json=json.dumps(public_events, ensure_ascii=False),
             completed_at=now_iso(),
         )
@@ -263,7 +264,7 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
             node_id,
             status="failed",
             answer=answer,
-            error=(error_message or "Claude API 未返回有效回答")[-8000:],
+            error=(error_message or "Claude API returned no valid answer")[-8000:],
             raw_events_json=json.dumps(public_events, ensure_ascii=False),
             completed_at=now_iso(),
             prompt_tokens=prompt_tokens,

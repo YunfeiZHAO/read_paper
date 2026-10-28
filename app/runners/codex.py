@@ -40,7 +40,7 @@ async def _run_codex_for_node_async(node_id: str) -> None:
         update_node(
             node_id,
             status="failed",
-            error="Codex 后端不可用：sub-pool-client 未安装。请切换到 Claude 后端。",
+            error="Codex backend unavailable: sub-pool-client is not installed. Please switch to the Claude backend.",
             completed_at=now_iso(),
         )
         return
@@ -80,7 +80,7 @@ async def _run_codex_for_node_async(node_id: str) -> None:
                 status="running",
                 account_name=account_name,
                 account_path=f"sub-pool lease {lease_id or ''}".strip(),
-                account_reason=f"sub-pool 自动分配（model={CODEX_MODEL}）",
+                account_reason=f"sub-pool auto-assigned (model={CODEX_MODEL})",
                 model=CODEX_MODEL or None,
             )
 
@@ -190,7 +190,7 @@ async def _run_codex_for_node_async(node_id: str) -> None:
                 except Exception:
                     pass
     except Exception as exc:  # noqa: BLE001
-        update_node(node_id, status="failed", error=f"sub-pool 调用失败：{exc}", completed_at=now_iso())
+        update_node(node_id, status="failed", error=f"sub-pool call failed: {exc}", completed_at=now_iso())
         return
 
     stdout_text = "".join(stdout_lines)
@@ -210,7 +210,7 @@ async def _run_codex_for_node_async(node_id: str) -> None:
         update_node(
             node_id,
             status="failed",
-            error=f"Codex 超时：超过 {CODEX_TIMEOUT_SECONDS} 秒未完成",
+            error=f"Codex timed out: not finished within {CODEX_TIMEOUT_SECONDS} seconds",
             raw_events_json=json.dumps(public_events, ensure_ascii=False),
             completed_at=now_iso(),
         )
@@ -231,9 +231,9 @@ async def _run_codex_for_node_async(node_id: str) -> None:
         if account_name:
             add_account_usage(account_name, node_id, usage["total_tokens"])
     else:
-        error = stderr_text.strip() or stdout_text.strip() or "Codex 执行失败"
+        error = stderr_text.strip() or stdout_text.strip() or "Codex execution failed"
         if rate_limited:
-            error = f"[已上报 sub-pool 冷却该账号] {error}"
+            error = f"[reported to sub-pool; account put on cooldown] {error}"
         update_node(
             node_id,
             status="failed",

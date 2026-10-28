@@ -138,4 +138,4 @@ def trim_events_for_storage(events: List[Dict[str, Any]], max_events: int = 80) 
     serialized = json.dumps(trimmed, ensure_ascii=False)
     if len(serialized) <= 120000:
         return trimmed
-    return [{"type": "truncated", "message": "事件过大，已截断存储", "events": len(events)}]
+    return [{"type": "truncated", "message": "Events too large; truncated for storage", "events": len(events)}]

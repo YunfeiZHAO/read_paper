@@ -57,7 +57,7 @@ def public_workspace_file(path: Path, source_node: Optional[Dict[str, Any]] = No
     }
     if source_node:
         item["source_node_id"] = source_node.get("id")
-        item["source_title"] = source_node.get("title") or "节点"
+        item["source_title"] = source_node.get("title") or "Node"
     return item
 
 
@@ -76,16 +76,16 @@ def public_workspace_ref(path: Path) -> Dict[str, Any]:
 def resolve_workspace_file(value: str) -> Path:
     raw = str(value or "").strip()
     if not raw:
-        raise ValueError("文件路径不能为空")
+        raise ValueError("File path cannot be empty")
 
     workspace_root = WORK_DIR.resolve()
     candidate = Path(raw)
     path = candidate.resolve() if candidate.is_absolute() else (workspace_root / raw).resolve()
 
     if not path_is_within(path, workspace_root):
-        raise ValueError("文件不在 workspace 内")
+        raise ValueError("File is not inside the workspace")
     if not path.exists() or not path.is_file():
-        raise FileNotFoundError("文件不存在")
+        raise FileNotFoundError("File does not exist")
     return path
 
 

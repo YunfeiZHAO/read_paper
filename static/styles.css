@@ -2152,17 +2152,17 @@ button.meta-pill {
   position: absolute;
   pointer-events: auto;
   cursor: pointer;
-  mix-blend-mode: multiply;
   border-radius: 1px;
   transition: filter 0.1s ease;
 }
 .pdf-hl.has-node { box-shadow: inset 0 -2px 0 rgba(58, 110, 165, 0.7); }
 .pdf-hl.active { filter: brightness(0.9); }
 .pdf-hl:hover { filter: brightness(0.92); }
-.hl-yellow { background: #ffe169; }
-.hl-green { background: #aee6a0; }
-.hl-blue { background: #a9d4ff; }
-.hl-pink { background: #ffb3c7; }
+/* Translucent fills so the PDF text underneath stays readable. */
+.hl-yellow { background: rgba(255, 221, 64, 0.4); }
+.hl-green { background: rgba(130, 222, 120, 0.4); }
+.hl-blue { background: rgba(120, 185, 255, 0.42); }
+.hl-pink { background: rgba(255, 130, 175, 0.42); }
 
 .pdf-empty {
   position: absolute;

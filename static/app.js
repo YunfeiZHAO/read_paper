@@ -499,10 +499,10 @@ function renderMarkdown(text) {
 
 function statusText(status) {
   return {
-    queued: "排队",
-    running: "运行",
-    done: "完成",
-    failed: "失败",
+    queued: "Queued",
+    running: "Running",
+    done: "Done",
+    failed: "Failed",
   }[status] || status || "-";
 }
 
@@ -608,7 +608,7 @@ async function fetchClaudeCodeTree(path, { keepSelection = false } = {}) {
     const res = await fetch(`/api/claude-code/tree?path=${encodeURIComponent(cleanPath)}`);
     const data = await res.json();
     if (!res.ok) {
-      window.alert(data.error || `读取失败 (HTTP ${res.status})`);
+      window.alert(data.error || `Load failed (HTTP ${res.status})`);
       return false;
     }
     state.allNodes = data.nodes || [];
@@ -633,7 +633,7 @@ async function fetchClaudeCodeTree(path, { keepSelection = false } = {}) {
     render();
     return true;
   } catch (err) {
-    window.alert(`读取失败：${err.message || err}`);
+    window.alert(`Load failed: ${err.message || err}`);
     return false;
   }
 }
@@ -705,7 +705,7 @@ async function setMode(newMode) {
 
 async function promptImportClaudeCodePath() {
   const last = localStorage.getItem("ccLastPath") || "";
-  const path = window.prompt("输入本地项目路径\n（直接读 ~/.claude/projects/<slug>/，每个根对话 = 一个项目）", last);
+  const path = window.prompt("Enter a local project path\n(reads ~/.claude/projects/<slug>/ directly; each root conversation = one project)", last);
   if (path === null) return;
   const trimmed = path.trim();
   if (!trimmed) return;
@@ -829,13 +829,13 @@ function renderDocumentSelect() {
   if (!state.documents.length) {
     const empty = document.createElement("option");
     empty.value = "";
-    empty.textContent = "上传 PDF →";
+    empty.textContent = "Upload PDF →";
     options.push(empty);
   }
   for (const doc of state.documents) {
     const option = document.createElement("option");
     option.value = doc.id;
-    option.textContent = compact(doc.title || doc.original_name || "未命名", 36);
+    option.textContent = compact(doc.title || doc.original_name || "Untitled", 36);
     options.push(option);
   }
   els.documentSelect.replaceChildren(...options);
@@ -846,8 +846,8 @@ function renderDocumentSelect() {
 function renderWorkspaceDrawer() {
   if (!els.workspaceDrawer) return;
   els.workspaceDrawer.classList.toggle("collapsed", !state.workspaceOpen);
-  els.workspaceToggleBtn.setAttribute("aria-label", state.workspaceOpen ? "折叠 Workspace" : "展开 Workspace");
-  els.workspaceToggleBtn.title = state.workspaceOpen ? "折叠 Workspace" : "展开 Workspace";
+  els.workspaceToggleBtn.setAttribute("aria-label", state.workspaceOpen ? "Collapse Workspace" : "Expand Workspace");
+  els.workspaceToggleBtn.title = state.workspaceOpen ? "Collapse Workspace" : "Expand Workspace";
 }
 
 function setWorkspaceDrawerOpen(open) {
@@ -871,15 +871,15 @@ function renderProjectSelect() {
   } else if (!state.projects.length) {
     const empty = document.createElement("option");
     empty.value = "";
-    empty.textContent = state.ccPath ? "（无对话）" : "点击 📥 选择项目";
+    empty.textContent = state.ccPath ? "(no conversations)" : "Click 📥 to choose a project";
     options.push(empty);
   }
   for (const project of state.projects) {
     const option = document.createElement("option");
     option.value = project.id;
     const stats = state.projectStats && state.projectStats.get(project.id);
-    const suffix = stats ? `  ·  ${stats.nodes}节 / ${stats.leaves}叶` : "";
-    option.textContent = compact(project.title || project.prompt || "未命名项目", 30) + suffix;
+    const suffix = stats ? `  ·  ${stats.nodes} nodes / ${stats.leaves} leaves` : "";
+    option.textContent = compact(project.title || project.prompt || "Untitled project", 30) + suffix;
     options.push(option);
   }
   els.projectSelect.replaceChildren(...options);
@@ -1150,9 +1150,9 @@ function makeNodeCard(node) {
     const noteButton = document.createElement("button");
     noteButton.type = "button";
     noteButton.className = "node-note-button";
-    noteButton.setAttribute("aria-label", "笔记");
+    noteButton.setAttribute("aria-label", "Notes");
     noteButton.setAttribute("title", "");
-    noteButton.textContent = "笔";
+    noteButton.textContent = "N";
     noteButton.addEventListener("mouseenter", (event) => {
       hideNodePromptPreview();
       showNodeNotePreview(node, event.currentTarget);
@@ -1170,7 +1170,7 @@ function makeNodeCard(node) {
   top.className = "node-top";
   const title = document.createElement("div");
   title.className = "node-title";
-  title.textContent = node.title || "节点";
+  title.textContent = node.title || "Node";
   const markers = document.createElement("div");
   markers.className = "node-markers";
   const dot = document.createElement("span");
@@ -1363,7 +1363,7 @@ function describeTool(item) {
   if (type === "command_execution") {
     return {
       name: "Bash",
-      detail: item.command || "准备执行命令",
+      detail: item.command || "Preparing to run a command",
       output: item.aggregated_output || "",
       status: item.status || "in_progress",
     };
@@ -1373,7 +1373,7 @@ function describeTool(item) {
     const query = item.query || action.query || (Array.isArray(action.queries) ? action.queries.join(", ") : "");
     return {
       name: "Search",
-      detail: query || "准备搜索",
+      detail: query || "Preparing to search",
       output: "",
       status: item.status || "in_progress",
     };
@@ -1381,8 +1381,8 @@ function describeTool(item) {
   if (type === "summary") {
     const text = item.text || item.summary || item.content || item.message || "";
     return {
-      name: "上下文压缩",
-      detail: "Codex 自动压缩了历史以节省上下文",
+      name: "Context compaction",
+      detail: "Codex automatically compacted the history to save context",
       output: text,
       status: item.status || "completed",
       kind: "summary",
@@ -1433,7 +1433,7 @@ function renderToolCalls(tools) {
     if (tool.kind === "summary") {
       title.textContent = tool.name;
     } else {
-      title.textContent = tool.status === "completed" ? `${tool.name} 完成` : `正在调用 ${tool.name}`;
+      title.textContent = tool.status === "completed" ? `${tool.name} done` : `Calling ${tool.name}`;
     }
     const detail = document.createElement("div");
     detail.className = "tool-detail";
@@ -1457,7 +1457,7 @@ function renderToolCalls(tools) {
 function makeTypingIndicator() {
   const dots = document.createElement("div");
   dots.className = "typing-dots";
-  dots.setAttribute("aria-label", "Agent 正在运行");
+  dots.setAttribute("aria-label", "Agent is running");
   for (let i = 0; i < 3; i += 1) {
     const dot = document.createElement("span");
     dots.appendChild(dot);
@@ -1553,12 +1553,12 @@ function renderProjectNotesSummary() {
   const wrap = document.createElement("section");
   wrap.className = "project-notes-summary";
   const title = document.createElement("h3");
-  title.textContent = "项目笔记";
+  title.textContent = "Project notes";
   wrap.appendChild(title);
   if (!state.projectNotes.length) {
     const empty = document.createElement("div");
     empty.className = "soft-label";
-    empty.textContent = "暂无笔记";
+    empty.textContent = "No notes yet";
     wrap.appendChild(empty);
     return wrap;
   }
@@ -1568,7 +1568,7 @@ function renderProjectNotesSummary() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "project-note-title";
-    button.textContent = item.title || "节点";
+    button.textContent = item.title || "Node";
     button.addEventListener("click", () => {
       selectNode(item.id);
       setSideTab("notes");
@@ -1593,12 +1593,12 @@ function renderNotePanel() {
   els.noteStatus.textContent = disabled
     ? "say something"
     : state.noteSaving
-      ? "保存中"
+      ? "Saving"
       : state.noteDirty
-        ? "节点笔记未保存"
+        ? "Node notes unsaved"
         : state.noteEditing
-          ? "编辑笔记"
-          : "节点笔记";
+          ? "Editing notes"
+          : "Node notes";
   if (els.noteEditor.value !== state.noteDraft) {
     els.noteEditor.value = state.noteDraft;
   }
@@ -1669,13 +1669,13 @@ function makeResumePill(node) {
   pill.className = "meta-pill resume-pill";
   const shortMsg = messageUuid.slice(0, 8);
   pill.textContent = `↻ resume @${shortMsg}…`;
-  pill.title = `点击：为此节点生成一个新的 session 文件并复制 resume 命令\n（在 ~/.claude/projects/ 下生成 branch-${shortMsg}-*.jsonl）`;
+  pill.title = `Click: generate a new session file for this node and copy the resume command\n(creates branch-${shortMsg}-*.jsonl under ~/.claude/projects/)`;
   pill.addEventListener("click", async (event) => {
     event.stopPropagation();
     if (pill.disabled) return;
     pill.disabled = true;
     const original = pill.textContent;
-    pill.textContent = "生成中…";
+    pill.textContent = "Generating…";
     try {
       const res = await fetch("/api/claude-code/resume-from-node", {
         method: "POST",
@@ -1684,20 +1684,20 @@ function makeResumePill(node) {
       });
       const data = await res.json();
       if (!res.ok) {
-        window.alert(data.error || `生成失败 (HTTP ${res.status})`);
+        window.alert(data.error || `Generation failed (HTTP ${res.status})`);
         return;
       }
       const command = data.command || `claude --resume ${data.session_id}`;
       const ok = await copyTextToClipboard(command);
       if (ok) {
-        pill.textContent = `已复制 ✓ (链 ${data.chain_length})`;
+        pill.textContent = `Copied ✓ (chain ${data.chain_length})`;
         pill.classList.add("copied");
       } else {
-        window.prompt("自动复制失败，请手动复制：", command);
+        window.prompt("Automatic copy failed — please copy manually:", command);
         pill.textContent = original;
       }
     } catch (err) {
-      window.alert(`生成失败：${err.message || err}`);
+      window.alert(`Generation failed: ${err.message || err}`);
     } finally {
       pill.disabled = false;
       setTimeout(() => {
@@ -1725,7 +1725,7 @@ function renderConversation() {
     return;
   }
 
-  els.detailTitle.textContent = node.title || "节点";
+  els.detailTitle.textContent = node.title || "Node";
 
   const meta = [
     statusText(node.status),
@@ -1756,7 +1756,7 @@ function renderConversation() {
   for (const item of selectedConversationPath()) {
     bubbles.push(makeBubble("user", item.prompt, item.created_at || "", [], false, item.attachments || [], item.workspace_refs || []));
     const active = isNodeActive(item);
-    const agentText = item.answer || item.error || (active ? "正在处理" : item.status === "done" ? "" : statusText(item.status));
+    const agentText = item.answer || item.error || (active ? "Working…" : item.status === "done" ? "" : statusText(item.status));
     bubbles.push(makeBubble("agent", agentText, item.completed_at || item.updated_at || "", toolCallsForNode(item), active));
   }
   els.conversationList.replaceChildren(...bubbles);
@@ -1774,7 +1774,7 @@ function renderComposer() {
     cite.className = "pending-quote";
     const label = document.createElement("span");
     label.className = "pending-quote-label";
-    label.textContent = `原文 · 第${(sel.page || 0) + 1}页`;
+    label.textContent = `Source · p.${(sel.page || 0) + 1}`;
     const text = document.createElement("span");
     text.className = "pending-quote-text";
     text.textContent = compact(sel.quote, 160);
@@ -1782,7 +1782,7 @@ function renderComposer() {
     remove.type = "button";
     remove.className = "pending-quote-remove";
     remove.textContent = "×";
-    remove.title = "取消引用";
+    remove.title = "Remove citation";
     remove.addEventListener("click", () => {
       state.pendingSelection = null;
       renderComposer();
@@ -1833,7 +1833,7 @@ function renderWorkspaceFiles() {
   if (state.workspaceLoading) {
     const loading = document.createElement("div");
     loading.className = "soft-label";
-    loading.textContent = "正在读取 Workspace";
+    loading.textContent = "Loading Workspace";
     els.workspaceFileList.replaceChildren(loading);
     return;
   }
@@ -1847,7 +1847,7 @@ function renderWorkspaceFiles() {
   if (!state.workspaceFiles.length) {
     const empty = document.createElement("div");
     empty.className = "soft-label";
-    empty.textContent = "暂无 Workspace 文件";
+    empty.textContent = "No Workspace files yet";
     els.workspaceFileList.replaceChildren(empty);
     return;
   }
@@ -1868,7 +1868,7 @@ function renderWorkspaceFiles() {
     const sub = document.createElement("span");
     sub.className = "workspace-file-sub";
     sub.textContent = [
-      file.source_title ? `来自 ${compact(file.source_title, 22)}` : "",
+      file.source_title ? `from ${compact(file.source_title, 22)}` : "",
       file.dir || "workspace",
       formatBytes(file.size),
       file.modified_at || "",
@@ -1905,7 +1905,7 @@ function renderWorkspacePreviewShell(file) {
   els.workspaceDownloadBtn.href = workspaceFileUrl(file, true);
   const loading = document.createElement("div");
   loading.className = "workspace-preview-loading";
-  loading.textContent = "正在加载";
+  loading.textContent = "Loading";
   els.workspacePreviewBody.replaceChildren(loading);
 }
 
@@ -1915,7 +1915,7 @@ async function openWorkspaceFile(file) {
   if (file.kind === "markdown" || file.kind === "text") {
     const res = await fetch(workspaceContentUrl(file));
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "读取文件失败");
+    if (!res.ok) throw new Error(data.error || "Failed to read file");
     const body = document.createElement("div");
     if (file.kind === "markdown") {
       body.className = "workspace-markdown-preview";
@@ -1929,7 +1929,7 @@ async function openWorkspaceFile(file) {
     if (data.truncated) {
       const notice = document.createElement("div");
       notice.className = "preview-notice";
-      notice.textContent = "文件较大，仅显示前半部分内容";
+      notice.textContent = "Large file — showing only the first portion";
       body.appendChild(notice);
     }
     els.workspacePreviewBody.replaceChildren(body);
@@ -1947,7 +1947,7 @@ async function openWorkspaceFile(file) {
 
   const fallback = document.createElement("div");
   fallback.className = "workspace-file-fallback";
-  fallback.textContent = "该文件类型暂不支持内嵌预览，可以新窗口打开或下载。";
+  fallback.textContent = "This file type can't be previewed inline — open it in a new window or download it.";
   els.workspacePreviewBody.replaceChildren(fallback);
 }
 
@@ -1967,7 +1967,7 @@ async function fetchWorkspaceFiles() {
   try {
     const res = await fetch(`/api/workspace/files?node_id=${encodeURIComponent(selectedId)}`);
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "读取 Workspace 失败");
+    if (!res.ok) throw new Error(data.error || "Failed to load Workspace");
     if (selectedId !== state.selectedId) return;
     state.workspaceFiles = data.files || [];
   } catch (err) {
@@ -2020,7 +2020,7 @@ function showDropOverlay() {
   if (!overlay) {
     overlay = document.createElement("div");
     overlay.className = "drop-overlay";
-    overlay.innerHTML = '<div class="drop-overlay-label">释放以上传文件</div>';
+    overlay.innerHTML = '<div class="drop-overlay-label">Drop to upload files</div>';
     els.conversationPane.appendChild(overlay);
   }
   overlay.hidden = false;
@@ -2071,7 +2071,7 @@ async function uploadDroppedFiles(fileList) {
     const res = await fetch("/api/upload", { method: "POST", body: form });
     const data = await res.json();
     if (!res.ok) {
-      window.alert(data.error || "上传失败");
+      window.alert(data.error || "Upload failed");
       return;
     }
     for (const file of data.files || []) state.fileIds.add(file.id);
@@ -2106,13 +2106,13 @@ async function sendPrompt(event) {
   const prompt = els.promptInput.value.trim();
   if (!prompt || state.sending) return;
   if (!state.currentDocId) {
-    window.alert("请先上传并选择一篇 PDF");
+    window.alert("Please upload and select a PDF first");
     return;
   }
   state.sending = true;
   renderComposer();
   try {
-    // 若引用了尚未保存的选区,先落盘为高亮,拿到其 id 以便与问答节点关联。
+    // If an unsaved selection is cited, persist it as a highlight first so we can link it to the question node.
     let highlightId = state.pendingSelection ? state.pendingSelection.highlightId || null : null;
     if (state.pendingSelection && !highlightId) {
       highlightId = await persistHighlight(state.pendingSelection);
@@ -2131,7 +2131,7 @@ async function sendPrompt(event) {
       }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || data.error || "发送失败");
+    if (!res.ok) throw new Error(data.detail || data.error || "Send failed");
     state.selectedId = data.node.id;
     state.parentId = data.node.id;
     state.pendingSelection = null;
@@ -2156,7 +2156,7 @@ async function uploadFiles() {
   const res = await fetch("/api/upload", { method: "POST", body: form });
   const data = await res.json();
   if (!res.ok) {
-    window.alert(data.error || "上传失败");
+    window.alert(data.error || "Upload failed");
     return;
   }
   for (const file of data.files || []) state.fileIds.add(file.id);
@@ -2175,7 +2175,7 @@ async function saveNote() {
       body: JSON.stringify({ note_md: els.noteEditor.value }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "保存失败");
+    if (!res.ok) throw new Error(data.error || "Save failed");
     state.noteDirty = false;
     state.noteEditing = false;
     state.noteDraftNodeId = data.node.id;
@@ -2195,7 +2195,7 @@ async function readProjectNotes() {
   const res = await fetch(`/api/projects/${projectId}/notes`);
   const data = await res.json();
   if (!res.ok) {
-    window.alert(data.error || "读取失败");
+    window.alert(data.error || "Load failed");
     return;
   }
   state.projectNotes = data.notes || [];
@@ -2383,7 +2383,7 @@ async function appendSelectionToNote() {
   });
   const data = await res.json();
   if (!res.ok) {
-    window.alert(data.error || "追加失败");
+    window.alert(data.error || "Append failed");
     return;
   }
   state.activeSideTab = "notes";
@@ -2403,7 +2403,7 @@ async function patchSelected(payload) {
   });
   if (!res.ok) {
     const data = await res.json();
-    window.alert(data.error || "更新失败");
+    window.alert(data.error || "Update failed");
     return;
   }
   await fetchTree();
@@ -2416,15 +2416,15 @@ async function deleteSelected() {
   const children = state.childrenByParent.get(node.id) || [];
   const confirmed = window.confirm(
     children.length
-      ? "删除这个节点以及它后面的所有节点？"
-      : "删除这个节点？"
+      ? "Delete this node and all nodes after it?"
+      : "Delete this node?"
   );
   if (!confirmed) return;
   const fallbackParentId = node.parent_id || null;
   const res = await fetch(`/api/nodes/${node.id}`, { method: "DELETE" });
   const data = await res.json();
   if (!res.ok) {
-    window.alert(data.error || "删除失败");
+    window.alert(data.error || "Delete failed");
     return;
   }
   if (fallbackParentId && state.nodeById.has(fallbackParentId)) {
@@ -2555,11 +2555,11 @@ async function loadPdf() {
     updatePdfPageInfo();
     renderHighlights();
   } catch (err) {
-    console.error("PDF 加载失败", err);
+    console.error("PDF failed to load", err);
     if (els.pdfPages) {
       const msg = document.createElement("div");
       msg.className = "pdf-error";
-      msg.textContent = `PDF 加载失败：${err.message || err}`;
+      msg.textContent = `PDF failed to load: ${err.message || err}`;
       els.pdfPages.replaceChildren(msg);
     }
   }
@@ -2604,7 +2604,7 @@ async function renderPdfPage(pdf, pageNum, pageEl, token) {
       textDivs: [],
     }).promise;
   } catch (err) {
-    console.warn("文字层渲染失败", err);
+    console.warn("Text layer failed to render", err);
   }
   drawHighlightsForPage(pageNum - 1);
 }
@@ -2612,7 +2612,7 @@ async function renderPdfPage(pdf, pageNum, pageEl, token) {
 function updatePdfPageInfo() {
   if (!els.pdfPageInfo) return;
   const n = state.pdfDoc ? state.pdfDoc.numPages : 0;
-  els.pdfPageInfo.textContent = n ? `${n} 页 · ${Math.round(state.pdfScale * 100)}%` : "";
+  els.pdfPageInfo.textContent = n ? `${n} pages · ${Math.round(state.pdfScale * 100)}%` : "";
 }
 
 function setPdfScale(scale) {
@@ -2705,7 +2705,7 @@ async function persistHighlight(sel) {
     body: JSON.stringify({ page: sel.page, rects: sel.rects, quote: sel.quote, color: sel.color || pdfSelColor }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || data.error || "保存高亮失败");
+  if (!res.ok) throw new Error(data.detail || data.error || "Failed to save highlight");
   state.highlights.push(data.highlight);
   drawHighlightsForPage(sel.page);
   return data.highlight.id;
@@ -2772,7 +2772,7 @@ function drawHighlightsForPage(page) {
       box.style.width = `${rect.w * w}px`;
       box.style.height = `${rect.h * h}px`;
       box.dataset.highlightId = hl.id;
-      box.title = hl.node_id ? "点击:跳到问答节点 · 右键:菜单" : "右键:菜单";
+      box.title = hl.node_id ? "Click: go to question node · Right-click: menu" : "Right-click: menu";
       boxes.push(box);
     }
   }
@@ -2829,7 +2829,7 @@ async function recolorActiveHighlight(color) {
       body: JSON.stringify({ color }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || data.error || "更新失败");
+    if (!res.ok) throw new Error(data.detail || data.error || "Update failed");
     hl.color = color;
     drawHighlightsForPage(hl.page);
   } catch (err) {
@@ -2844,7 +2844,7 @@ async function deleteActiveHighlight() {
     const res = await fetch(`/api/highlights/${hl.id}`, { method: "DELETE" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || data.error || "删除失败");
+      throw new Error(data.detail || data.error || "Delete failed");
     }
     const page = hl.page;
     state.highlights = state.highlights.filter((h) => h.id !== hl.id);
@@ -2912,7 +2912,7 @@ async function uploadPdf(file) {
   try {
     const res = await fetch("/api/documents", { method: "POST", body: form });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || data.error || "上传失败");
+    if (!res.ok) throw new Error(data.detail || data.error || "Upload failed");
     await fetchDocuments();
     await selectDocument(data.document.id);
   } catch (err) {
@@ -2923,12 +2923,12 @@ async function uploadPdf(file) {
 async function deleteCurrentDocument() {
   const doc = currentDocument();
   if (!doc) return;
-  if (!window.confirm(`删除《${doc.title || doc.original_name}》？\n其所有高亮与问答节点都会一并删除,不可恢复。`)) return;
+  if (!window.confirm(`Delete "${doc.title || doc.original_name}"?\nAll of its highlights and question nodes will be deleted too, and this can't be undone.`)) return;
   try {
     const res = await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || data.error || "删除失败");
+      throw new Error(data.detail || data.error || "Delete failed");
     }
     state.currentDocId = null;
     await fetchDocuments();
@@ -3057,11 +3057,13 @@ function wireEvents() {
   els.selAskBtn.addEventListener("click", askFromSelection);
   els.selectionToolbar.querySelectorAll(".hl-color").forEach((btn) => {
     btn.addEventListener("mousedown", (event) => {
-      event.preventDefault(); // 不要丢失当前选区
+      event.preventDefault(); // keep the current text selection alive
       pdfSelColor = btn.dataset.color;
       localStorage.setItem("hlColor", pdfSelColor);
       if (state.pendingSelection) state.pendingSelection.color = pdfSelColor;
       syncSelColorButtons(els.selectionToolbar);
+      // Clicking a color swatch highlights the selection immediately in that color.
+      highlightSelection().catch(console.error);
     });
   });
   els.highlightMenu.querySelectorAll(".hl-color").forEach((btn) => {

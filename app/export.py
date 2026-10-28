@@ -9,7 +9,7 @@ from .db import DB_LOCK, db_connection, get_node, public_node
 def export_subtree_markdown(root_id: str) -> str:
     root = get_node(root_id)
     if not root:
-        raise ValueError("节点不存在")
+        raise ValueError("Node does not exist")
     with DB_LOCK, db_connection() as conn:
         rows = conn.execute("SELECT * FROM nodes ORDER BY created_at").fetchall()
     nodes = [public_node(row) for row in rows]
@@ -25,7 +25,7 @@ def export_subtree_markdown(root_id: str) -> str:
             [
                 f"{heading} {node['title']}",
                 "",
-                f"- 状态: {node['status']}",
+                f"- Status: {node['status']}",
                 f"- Token: {node.get('total_tokens') or 0}",
                 "",
                 "**User**",
@@ -34,7 +34,7 @@ def export_subtree_markdown(root_id: str) -> str:
                 "",
                 "**Assistant**",
                 "",
-                (node.get("answer") or "").strip() or "(无回答)",
+                (node.get("answer") or "").strip() or "(no answer)",
                 "",
             ]
         )

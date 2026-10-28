@@ -36,7 +36,7 @@ def safe_json_loads(value: str, fallback: Any) -> Any:
 def compact_title(text: str, limit: int = 44) -> str:
     normalized = re.sub(r"\s+", " ", text.strip())
     if not normalized:
-        return "新问题"
+        return "New question"
     return normalized if len(normalized) <= limit else normalized[: limit - 1] + "…"
 
 

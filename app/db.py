@@ -212,7 +212,7 @@ def create_node(
     source_highlight_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if parent_id and not get_node(parent_id):
-        raise ValueError("父节点不存在")
+        raise ValueError("Parent node does not exist")
 
     files = get_files(file_ids)
     attachments = [
@@ -257,7 +257,7 @@ def create_node(
         )
     node = get_node(node_id)
     if not node:
-        raise RuntimeError("节点创建失败")
+        raise RuntimeError("Failed to create node")
     return node
 
 
@@ -336,11 +336,11 @@ def path_to_node(node_id: Optional[str]) -> List[Dict[str, Any]]:
 def append_node_note(node_id: str, text: str) -> Dict[str, Any]:
     addition = text.strip()
     if not addition:
-        raise ValueError("追加内容不能为空")
+        raise ValueError("Content to append cannot be empty")
     with DB_LOCK, db_connection() as conn:
         row = conn.execute("SELECT note_md FROM nodes WHERE id = ?", (node_id,)).fetchone()
         if not row:
-            raise ValueError("节点不存在")
+            raise ValueError("Node does not exist")
         current = str(row["note_md"] or "").rstrip()
         next_note = f"{current}\n\n{addition}" if current else addition
         conn.execute(
@@ -349,7 +349,7 @@ def append_node_note(node_id: str, text: str) -> Dict[str, Any]:
         )
     node = get_node(node_id)
     if not node:
-        raise ValueError("节点不存在")
+        raise ValueError("Node does not exist")
     return node
 
 
@@ -370,7 +370,7 @@ def public_highlight(row: sqlite3.Row) -> Dict[str, Any]:
 
 def create_document(file_id: str, title: str, original_name: str, num_pages: Optional[int]) -> Dict[str, Any]:
     if not get_file(file_id):
-        raise ValueError("文件不存在")
+        raise ValueError("File does not exist")
     doc_id = uuid.uuid4().hex
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:
@@ -383,7 +383,7 @@ def create_document(file_id: str, title: str, original_name: str, num_pages: Opt
         )
     doc = get_document(doc_id)
     if not doc:
-        raise RuntimeError("文档创建失败")
+        raise RuntimeError("Failed to create document")
     return doc
 
 
@@ -448,7 +448,7 @@ def create_highlight(
     node_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not get_document(document_id):
-        raise ValueError("文档不存在")
+        raise ValueError("Document does not exist")
     hl_id = uuid.uuid4().hex
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:

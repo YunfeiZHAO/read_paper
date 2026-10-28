@@ -213,7 +213,7 @@ def read_claude_code_nodes(cc_dir: Path) -> List[Dict[str, Any]]:
         nodes.append({
             "id": f"cc:{uuid_}",
             "parent_id": f"cc:{parent_user}" if parent_user else None,
-            "title": compact_title(prompt_text or "（空消息）"),
+            "title": compact_title(prompt_text or "(empty message)"),
             "prompt": prompt_text,
             "answer": answer,
             "status": "done",
@@ -255,10 +255,10 @@ def resume_from_node(project_path: str, target_uuid: str) -> Tuple[Dict[str, Any
     last-prompt pointing at the target — then `claude --resume <new>` lands exactly there.
     """
     if not project_path or not target_uuid:
-        return {"error": "path 和 message_uuid 都不能为空"}, 400
+        return {"error": "path and message_uuid are both required"}, 400
     cc_dir = CLAUDE_PROJECTS_DIR / claude_code_slug(project_path)
     if not cc_dir.exists():
-        return {"error": f"Claude Code 项目目录不存在：{cc_dir}"}, 404
+        return {"error": f"Claude Code project directory does not exist: {cc_dir}"}, 404
 
     # Collect all messages across all sessions for this project, keyed by uuid.
     # First-occurrence wins, so re-running this against a project that already has synthetic
@@ -283,7 +283,7 @@ def resume_from_node(project_path: str, target_uuid: str) -> Tuple[Dict[str, Any
             continue
 
     if target_uuid not in all_msgs:
-        return {"error": f"未在该项目中找到 uuid={target_uuid}"}, 404
+        return {"error": f"uuid={target_uuid} not found in this project"}, 404
 
     # Walk parentUuid chain from target back to root.
     back_chain: List[Tuple[Dict[str, Any], str]] = []
@@ -366,7 +366,7 @@ def resume_from_node(project_path: str, target_uuid: str) -> Tuple[Dict[str, Any
                 out.write(all_msgs[fwd_uuid][1] + "\n")
             out.write(last_prompt_event + "\n")
     except OSError as exc:
-        return {"error": f"写入失败：{exc}"}, 500
+        return {"error": f"Write failed: {exc}"}, 500
 
     return {
         "session_id": new_sid,
