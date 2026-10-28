@@ -473,6 +473,63 @@ def api_project_notes(project_id: str) -> Dict[str, Any]:
     return {"project": {"id": project["id"], "title": project.get("title") or "Project"}, "notes": notes}
 
 
+@router.get("/api/documents/{document_id}/notes")
+def api_document_notes(document_id: str) -> Dict[str, Any]:
+    """Every note attached to a PDF — node notes and highlight notes — each carrying the
+    highlight it anchors to (a node note anchors to the node's source highlight) so the
+    reader can jump the PDF viewer to where the note was taken. Ordered by page, then time."""
+    document = get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document does not exist")
+
+    highlights_by_id = {hl["id"]: hl for hl in list_highlights(document_id)}
+
+    def _loc(hl: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Page/rect anchor for a highlight (page None sorts such notes last)."""
+        if not hl:
+            return {"highlight_id": None, "page": None, "quote": None}
+        return {"highlight_id": hl["id"], "page": hl.get("page"), "quote": hl.get("quote") or ""}
+
+    items: List[Dict[str, Any]] = []
+    for node in nodes_for_document(document_id):
+        md = str(node.get("note_md") or "").strip()
+        if not md:
+            continue
+        hl = highlights_by_id.get(node.get("source_highlight_id"))
+        items.append({
+            "kind": "node",
+            "target_id": node["id"],
+            "node_id": node["id"],
+            "title": node.get("title") or "Node",
+            "md": md,
+            "updated_at": node.get("updated_at") or node.get("created_at"),
+            **_loc(hl),
+        })
+    for hl in highlights_by_id.values():
+        if not hl.get("has_note"):
+            continue
+        note = notes.get_note("highlight", hl["id"])
+        md = str((note or {}).get("md") or "").strip()
+        if not md:
+            continue
+        items.append({
+            "kind": "highlight",
+            "target_id": hl["id"],
+            "node_id": hl.get("node_id"),
+            "title": (hl.get("quote") or "Highlight").strip() or "Highlight",
+            "md": md,
+            "updated_at": (note or {}).get("updated_at"),
+            **_loc(hl),
+        })
+
+    # Reading order: page ascending (anchorless notes last), then by time.
+    items.sort(key=lambda it: (it["page"] is None, it["page"] or 0, str(it.get("updated_at") or "")))
+    return {
+        "document": {"id": document["id"], "title": document.get("title") or "Document"},
+        "notes": items,
+    }
+
+
 @router.patch("/api/nodes/{node_id}")
 async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
     if not get_node(node_id):
@@ -542,6 +599,19 @@ def api_delete_node(node_id: str) -> Dict[str, Any]:
                 SELECT nodes.id FROM nodes JOIN doomed ON nodes.parent_id = doomed.id
             )
             DELETE FROM node_workspace_files WHERE node_id IN (SELECT id FROM doomed)
+            """,
+            (node_id,),
+        )
+        # Clear the back-link from any highlight that pointed at a doomed node, so the
+        # highlight survives but loses its stale "has-node" marker.
+        conn.execute(
+            """
+            WITH RECURSIVE doomed(id) AS (
+                SELECT ?
+                UNION ALL
+                SELECT nodes.id FROM nodes JOIN doomed ON nodes.parent_id = doomed.id
+            )
+            UPDATE highlights SET node_id = NULL WHERE node_id IN (SELECT id FROM doomed)
             """,
             (node_id,),
         )

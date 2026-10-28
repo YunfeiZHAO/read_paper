@@ -151,6 +151,7 @@
               <div class="panel-heading">
                 <h2 id="detailTitle">Conversation</h2>
                 <div class="panel-actions">
+                  <button id="renameBtn" class="icon-button" type="button" title="Rename node">✎</button>
                   <button id="deleteBtn" class="icon-button danger-button" type="button" title="Delete node and its descendants">⌫</button>
                   <button id="exportBtn" class="icon-button" type="button" title="Export">⇩</button>
                   <button class="icon-button pane-collapse" type="button" data-pane="chat" title="Collapse conversation pane">›</button>
@@ -235,6 +236,21 @@
       </div>
       <div id="nodeNotePreview" class="node-note-preview" hidden></div>
       <div id="nodePromptPreview" class="node-prompt-preview" hidden></div>
+
+      <div id="eventsModal" class="events-modal" hidden>
+        <div class="events-modal-backdrop" data-events-close></div>
+        <div class="events-modal-card" role="dialog" aria-modal="true" aria-label="Agent events JSON">
+          <div class="events-modal-head">
+            <div class="events-modal-title">Agent events</div>
+            <div class="events-modal-actions">
+              <button id="eventsCopyBtn" type="button" class="events-modal-btn">Copy</button>
+              <button id="eventsDownloadBtn" type="button" class="events-modal-btn primary">Download JSON</button>
+              <button id="eventsCloseBtn" type="button" class="events-modal-btn" data-events-close aria-label="Close">✕</button>
+            </div>
+          </div>
+          <pre id="eventsModalBody" class="events-modal-body"></pre>
+        </div>
+      </div>
 
     </div>
 

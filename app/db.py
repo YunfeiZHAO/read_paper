@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .config import DATA_DIR, DB_PATH, NOTES_DIR, RUN_DIR, UPLOAD_DIR, WORK_DIR
-from .utils import compact_title, now_iso, rows_to_dicts, safe_json_loads
+from .utils import compose_node_title, now_iso, rows_to_dicts, safe_json_loads
 
 DB_LOCK = threading.RLock()
 
@@ -430,6 +430,11 @@ def create_node(
         for item in files
     ]
 
+    quote = ""
+    if source_highlight_id:
+        hl = get_highlight(source_highlight_id)
+        quote = (hl or {}).get("quote") or ""
+
     node_id = uuid.uuid4().hex
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:
@@ -446,7 +451,7 @@ def create_node(
             (
                 node_id,
                 parent_id,
-                compact_title(prompt),
+                compose_node_title(quote, prompt),
                 prompt,
                 backend,
                 1 if enable_web_search else 0,
@@ -908,6 +913,12 @@ def _purge_notes(conn: sqlite3.Connection, kind: str, target_subquery: str, para
 def delete_highlight(highlight_id: str) -> bool:
     with DB_LOCK, db_connection() as conn:
         note_paths = _purge_notes(conn, "highlight", "?", (highlight_id,))
+        # Drop the forward link from any node that was asked from this highlight so it
+        # doesn't dangle (the node itself is independent and stays).
+        conn.execute(
+            "UPDATE nodes SET source_highlight_id = NULL WHERE source_highlight_id = ?",
+            (highlight_id,),
+        )
         cur = conn.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
         deleted = cur.rowcount > 0
     for rel in note_paths:

@@ -157,3 +157,34 @@ def test_api_node_note_patch_still_works(client, fresh_db):
     res = client.patch(f"/api/nodes/{node['id']}/note", json={"note_md": "patched"})
     assert res.status_code == 200
     assert res.json()["node"]["note_md"] == "patched"
+
+
+def test_api_document_notes_aggregates_node_and_highlight_notes(client, fresh_db):
+    from app import notes
+
+    _, doc = _document(fresh_db)
+    # A highlight with a standalone note, plus a question node anchored to another highlight.
+    hl_note = _highlight(fresh_db, doc)
+    notes.set_note("highlight", hl_note["id"], "highlight annotation")
+    src = fresh_db.create_highlight(doc["id"], 2, [{"x": 0.1, "y": 0.3, "w": 0.2, "h": 0.02}], "src", "green")
+    node = fresh_db.create_node(None, "q", [], [], document_id=doc["id"], source_highlight_id=src["id"])
+    notes.set_note("node", node["id"], "node annotation")
+    # A node without a note must not appear.
+    fresh_db.create_node(None, "no note", [], [], document_id=doc["id"])
+
+    data = client.get(f"/api/documents/{doc['id']}/notes").json()
+    assert data["document"]["id"] == doc["id"]
+    by_kind = {it["kind"]: it for it in data["notes"]}
+    assert set(by_kind) == {"node", "highlight"}
+    # Each note carries the highlight it anchors to, for jump-to-location.
+    assert by_kind["highlight"]["highlight_id"] == hl_note["id"]
+    assert by_kind["highlight"]["page"] == 0
+    assert by_kind["node"]["highlight_id"] == src["id"]
+    assert by_kind["node"]["page"] == 2
+    assert by_kind["node"]["node_id"] == node["id"]
+    # Reading order: page ascending.
+    assert [it["page"] for it in data["notes"]] == [0, 2]
+
+
+def test_api_document_notes_missing_document(client, fresh_db):
+    assert client.get("/api/documents/nope/notes").status_code == 404

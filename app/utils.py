@@ -40,5 +40,25 @@ def compact_title(text: str, limit: int = 44) -> str:
     return normalized if len(normalized) <= limit else normalized[: limit - 1] + "…"
 
 
+def compose_node_title(quote: str, prompt: str, limit: int = 80) -> str:
+    """Default node title combining the source highlight's quote with the question.
+
+    Shown as `"<quote…>" — <question…>` so a node recalls both what was selected
+    and what was asked. With no quote, falls back to the question-only title.
+    """
+    question = re.sub(r"\s+", " ", (prompt or "").strip())
+    snippet = re.sub(r"\s+", " ", (quote or "").strip())
+    if not snippet:
+        return compact_title(question, limit)
+    sep = " — "
+    # Give the quote up to ~half the budget, the question gets the rest.
+    quote_limit = max(16, (limit - len(sep)) // 2)
+    quote_part = snippet if len(snippet) <= quote_limit else snippet[: quote_limit - 1] + "…"
+    question_limit = max(1, limit - len(sep) - len(quote_part) - 2)  # -2 for the surrounding quotes
+    question_part = question if len(question) <= question_limit else question[: question_limit - 1] + "…"
+    title = f"“{quote_part}”{sep}{question_part}" if question_part else f"“{quote_part}”"
+    return title
+
+
 def indent_block(text: str, prefix: str) -> str:
     return "\n".join(prefix + line for line in text.splitlines())

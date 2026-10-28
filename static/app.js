@@ -44,6 +44,9 @@ const state = {
   currentDocId: localStorage.getItem("currentDocId") || null,
   pdfDoc: null,
   pdfScale: Number(localStorage.getItem("pdfScale")) || 1.3,
+  // The scale the page canvases are actually rasterized at. During a live pinch
+  // we CSS-zoom relative to this, then re-rasterize and reset the zoom to 1.
+  pdfRenderedScale: Number(localStorage.getItem("pdfScale")) || 1.3,
   pdfHorizontal: localStorage.getItem("pdfHorizontal") === "1",
   pdfMinimapOpen: localStorage.getItem("pdfMinimapOpen") === "1",
   pdfChromeHidden: localStorage.getItem("pdfChromeHidden") === "1",
@@ -85,6 +88,12 @@ const state = {
   noteEditing: false,
   projectNotes: [],
   projectNotesProjectId: null,
+  // "All notes" block in the Notes tab: every note on the current PDF, with the
+  // highlight each one anchors to so a click can jump the viewer there.
+  docNotes: [],
+  docNotesDocId: null,
+  docNotesLoading: false,
+  docNotesOpen: localStorage.getItem("docNotesOpen") === "1",
   noteContextText: "",
   scrollConversationToLatest: false,
   // Root node id whose subtree the "project notes" summary aggregates (null = none yet).
@@ -133,8 +142,14 @@ const els = {
   noteContextAppendBtn: document.getElementById("noteContextAppendBtn"),
   nodeNotePreview: document.getElementById("nodeNotePreview"),
   nodePromptPreview: document.getElementById("nodePromptPreview"),
+  renameBtn: document.getElementById("renameBtn"),
   deleteBtn: document.getElementById("deleteBtn"),
   exportBtn: document.getElementById("exportBtn"),
+  eventsModal: document.getElementById("eventsModal"),
+  eventsModalBody: document.getElementById("eventsModalBody"),
+  eventsCopyBtn: document.getElementById("eventsCopyBtn"),
+  eventsDownloadBtn: document.getElementById("eventsDownloadBtn"),
+  eventsCloseBtn: document.getElementById("eventsCloseBtn"),
   // ── documents / PDF ──
   homeBtn: document.getElementById("homeBtn"),
   breadcrumb: document.getElementById("breadcrumb"),
@@ -1176,9 +1191,19 @@ function positionNodePromptPreview(target) {
 function showNodePromptPreview(node, target) {
   const prompt = String(node.prompt || "").trim();
   if (!prompt) return;
+  const children = [];
+  const hl = node.source_highlight_id ? highlightById(node.source_highlight_id) : null;
+  const quote = hl ? String(hl.quote || "").trim() : "";
+  if (quote) {
+    const cite = document.createElement("blockquote");
+    cite.className = "node-prompt-preview-quote";
+    cite.textContent = quote;
+    children.push(cite);
+  }
   const pre = document.createElement("pre");
   pre.textContent = prompt;
-  els.nodePromptPreview.replaceChildren(pre);
+  children.push(pre);
+  els.nodePromptPreview.replaceChildren(...children);
   els.nodePromptPreview.hidden = false;
   positionNodePromptPreview(target);
 }
@@ -1583,7 +1608,7 @@ function renderReferenceChips(attachments = [], workspaceRefs = []) {
   return wrap;
 }
 
-function makeBubble(role, text, meta = "", tools = [], active = false, attachments = [], workspaceRefs = []) {
+function makeBubble(role, text, meta = "", tools = [], active = false, attachments = [], workspaceRefs = [], node = null) {
   const row = document.createElement("div");
   row.className = ["bubble-row", role, active && role === "agent" ? "running" : ""].filter(Boolean).join(" ");
   const bubble = document.createElement("div");
@@ -1591,6 +1616,15 @@ function makeBubble(role, text, meta = "", tools = [], active = false, attachmen
   const label = document.createElement("div");
   label.className = "bubble-label";
   label.textContent = role === "user" ? "User" : "Agent";
+  if (role === "agent" && node && (node.raw_events || []).length) {
+    const eventsBtn = document.createElement("button");
+    eventsBtn.type = "button";
+    eventsBtn.className = "bubble-events-btn";
+    eventsBtn.textContent = "{ } JSON";
+    eventsBtn.title = "View / download the raw agent events";
+    eventsBtn.addEventListener("click", () => openEventsModal(node));
+    label.appendChild(eventsBtn);
+  }
   const toolList = role === "agent" ? renderToolCalls(tools, active) : null;
   bubble.appendChild(label);
   if (toolList) bubble.appendChild(toolList);
@@ -1612,6 +1646,54 @@ function makeBubble(role, text, meta = "", tools = [], active = false, attachmen
   }
   row.appendChild(bubble);
   return row;
+}
+
+// ── Agent events JSON viewer ─────────────────────────────────────────────
+// Lets the user review a node's raw agent events (tool calls, reasoning,
+// search activity) in a modal and download them as a JSON file.
+let _eventsModalJson = "";
+let _eventsModalNode = null;
+
+function openEventsModal(node) {
+  _eventsModalNode = node;
+  const events = node.raw_events || [];
+  _eventsModalJson = JSON.stringify(events, null, 2);
+  els.eventsModalBody.textContent = _eventsModalJson;
+  els.eventsModal.hidden = false;
+}
+
+function closeEventsModal() {
+  els.eventsModal.hidden = true;
+  _eventsModalJson = "";
+  _eventsModalNode = null;
+}
+
+function downloadEventsJson() {
+  if (!_eventsModalNode) return;
+  const blob = new Blob([_eventsModalJson], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const base = (_eventsModalNode.title || `node-${_eventsModalNode.id}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || `node-${_eventsModalNode.id}`;
+  a.href = url;
+  a.download = `${base}-events.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyEventsJson() {
+  try {
+    await navigator.clipboard.writeText(_eventsModalJson);
+    els.eventsCopyBtn.textContent = "Copied";
+    setTimeout(() => (els.eventsCopyBtn.textContent = "Copy"), 1200);
+  } catch {
+    els.eventsCopyBtn.textContent = "Copy failed";
+    setTimeout(() => (els.eventsCopyBtn.textContent = "Copy"), 1200);
+  }
 }
 
 function setSideTab(tab) {
@@ -1679,6 +1761,113 @@ function ensureNoteDraft() {
     .catch(console.error);
 }
 
+// Fetch every note on the current PDF for the "All notes" block. Cached per document;
+// `force` refetches after a save so the list stays current.
+async function fetchDocNotes({ force = false } = {}) {
+  const docId = state.currentDocId;
+  if (!docId) {
+    state.docNotes = [];
+    state.docNotesDocId = null;
+    return;
+  }
+  if (!force && state.docNotesDocId === docId) return;
+  state.docNotesLoading = true;
+  renderNotePanel();
+  try {
+    const res = await fetch(`/api/documents/${docId}/notes`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Load failed");
+    if (state.currentDocId !== docId) return; // document changed mid-flight
+    state.docNotes = data.notes || [];
+    state.docNotesDocId = docId;
+  } catch (err) {
+    console.error(err);
+    state.docNotes = [];
+    state.docNotesDocId = null;
+  } finally {
+    state.docNotesLoading = false;
+    renderNotePanel();
+  }
+}
+
+// Open a note from the "All notes" block: jump the PDF viewer to the highlight it
+// anchors to (a node note uses the node's source highlight), and open that note.
+function jumpToDocNote(item) {
+  if (!item) return;
+  const hl = item.highlight_id ? highlightById(item.highlight_id) : null;
+  // Open the note itself in the side panel.
+  if (item.kind === "highlight" && hl) {
+    openHighlightNote(hl);
+  } else if (item.node_id && state.nodeById.has(item.node_id)) {
+    selectNode(item.node_id); // also reveals the node's source highlight
+    setSideTab("notes");
+  }
+  // Jump the PDF viewer to where the note was taken. Open the pane first if needed,
+  // then defer one frame so the just-shown pane has laid out before we measure.
+  if (hl) {
+    if (!state.paneOpen.pdf) setPaneOpen("pdf", true);
+    requestAnimationFrame(() => scrollToHighlight(hl));
+  }
+}
+
+// Collapsible "All notes" block listing every note on the current PDF. Each row is a
+// button that jumps the viewer to where that note was taken.
+function renderDocNotesBlock() {
+  if (!state.currentDocId) return null;
+  const details = document.createElement("details");
+  details.className = "doc-notes";
+  details.open = state.docNotesOpen;
+  if (state.docNotesOpen && state.docNotesDocId !== state.currentDocId && !state.docNotesLoading) {
+    fetchDocNotes();
+  }
+
+  const summary = document.createElement("summary");
+  summary.className = "doc-notes-summary";
+  const count = state.docNotesDocId === state.currentDocId ? state.docNotes.length : null;
+  summary.textContent = count === null ? "All notes" : `All notes (${count})`;
+  details.appendChild(summary);
+
+  details.addEventListener("toggle", () => {
+    if (details.open === state.docNotesOpen) return;
+    state.docNotesOpen = details.open;
+    try {
+      localStorage.setItem("docNotesOpen", details.open ? "1" : "0");
+    } catch {}
+    if (details.open) fetchDocNotes();
+  });
+
+  const body = document.createElement("div");
+  body.className = "doc-notes-body";
+  if (state.docNotesLoading && state.docNotesDocId !== state.currentDocId) {
+    body.innerHTML = '<div class="soft-label">Loading…</div>';
+  } else if (!state.docNotes.length) {
+    body.innerHTML = '<div class="soft-label">No notes on this PDF yet</div>';
+  } else {
+    for (const item of state.docNotes) {
+      const row = document.createElement("article");
+      row.className = "doc-note-item";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "doc-note-title";
+      const badge = document.createElement("span");
+      badge.className = `doc-note-kind doc-note-kind-${item.kind}`;
+      badge.textContent = item.page != null ? `p${item.page + 1}` : item.kind === "node" ? "Q" : "HL";
+      button.appendChild(badge);
+      const label = document.createElement("span");
+      label.className = "doc-note-label";
+      label.textContent = item.title || (item.kind === "node" ? "Node" : "Highlight");
+      button.appendChild(label);
+      if (!item.highlight_id) button.classList.add("doc-note-no-anchor");
+      button.addEventListener("click", () => jumpToDocNote(item));
+      row.appendChild(button);
+      row.appendChild(renderMarkdown(item.md || ""));
+      body.appendChild(row);
+    }
+  }
+  details.appendChild(body);
+  return details;
+}
+
 function renderProjectNotesSummary() {
   if (!state.projectNotesProjectId) return null;
   const wrap = document.createElement("section");
@@ -1743,6 +1932,8 @@ function renderNotePanel() {
 
   const rendered = document.createElement("div");
   rendered.className = "note-preview-section";
+  const docNotes = renderDocNotesBlock();
+  if (docNotes) rendered.appendChild(docNotes);
   if (isHighlight) {
     const quote = document.createElement("blockquote");
     quote.className = "note-highlight-quote";
@@ -1772,6 +1963,7 @@ function renderNotePanel() {
 function renderConversation() {
   const node = selectedNode();
   const disabled = !node;
+  els.renameBtn.disabled = disabled;
   els.deleteBtn.disabled = disabled;
   els.exportBtn.disabled = disabled;
 
@@ -1814,7 +2006,7 @@ function renderConversation() {
     bubbles.push(makeBubble("user", item.prompt, item.created_at || "", [], false, item.attachments || [], item.workspace_refs || []));
     const active = isNodeActive(item);
     const agentText = item.answer || item.error || (active ? "Working…" : item.status === "done" ? "" : statusText(item.status));
-    bubbles.push(makeBubble("agent", agentText, item.completed_at || item.updated_at || "", toolCallsForNode(item), active));
+    bubbles.push(makeBubble("agent", agentText, item.completed_at || item.updated_at || "", toolCallsForNode(item), active, [], [], item));
   }
   els.conversationList.replaceChildren(...bubbles);
   if (state.scrollConversationToLatest) {
@@ -1857,7 +2049,8 @@ function renderThreadTarget() {
   newThread.title = "Ask an unrelated question as a separate tree instead";
   newThread.addEventListener("click", () => {
     state.parentId = null;
-    renderComposer();
+    state.selectedId = null;
+    render();
     els.promptInput.focus();
   });
 
@@ -2267,6 +2460,8 @@ async function saveNote() {
       target.hl.has_note = Boolean(savedMd);
       drawHighlightsForPage(target.hl.page);
     }
+    // Keep the "All notes" block current after an edit/add/remove.
+    if (state.docNotesDocId === state.currentDocId) fetchDocNotes({ force: true });
   } catch (err) {
     window.alert(err.message);
   } finally {
@@ -2491,7 +2686,31 @@ async function appendSelectionToNote() {
   state.noteDraftNodeId = data.node.id;
   state.noteDraft = data.node.note_md || "";
   state.noteLoadedKey = `node:${data.node.id}`;
+  if (state.docNotesDocId === state.currentDocId) fetchDocNotes({ force: true });
   await fetchTree();
+}
+
+async function renameSelected() {
+  const node = selectedNode();
+  if (!node) return;
+  const next = window.prompt("Rename node", node.title || "");
+  if (next == null) return;
+  const title = next.trim();
+  if (!title || title === node.title) return;
+  try {
+    const res = await fetch(`/api/nodes/${node.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "Rename failed");
+    }
+    await fetchTree({ keepSelection: true });
+  } catch (err) {
+    window.alert(err.message);
+  }
 }
 
 async function deleteSelected() {
@@ -2523,6 +2742,9 @@ async function deleteSelected() {
   localStorage.setItem("selectedProjectId", state.selectedProjectId);
   await fetchTree();
   focusSelected();
+  // Deleting a node clears the back-link on any highlight it was asked from, so
+  // refresh highlights to drop the now-stale "has-node" marker.
+  await fetchHighlights();
   await fetchWorkspaceFiles();
 }
 
@@ -2615,19 +2837,7 @@ async function loadPdf() {
     const pdf = await task.promise;
     if (token !== state.pdfRenderToken) return; // the document changed while rendering
     state.pdfDoc = pdf;
-    for (let n = 1; n <= pdf.numPages; n += 1) {
-      const pageEl = document.createElement("div");
-      pageEl.className = "pdf-page";
-      pageEl.dataset.page = String(n - 1); // 0-based
-      els.pdfPages.appendChild(pageEl);
-      await renderPdfPage(pdf, n, pageEl, token);
-      if (token !== state.pdfRenderToken) return;
-    }
-    applyPdfLayout();
-    updatePdfPageInfo();
-    renderHighlights();
-    buildPdfMinimap();
-    updateMinimapActive();
+    await renderLoadedPdf(pdf, token);
   } catch (err) {
     console.error("PDF failed to load", err);
     if (els.pdfPages) {
@@ -2637,6 +2847,45 @@ async function loadPdf() {
       els.pdfPages.replaceChildren(msg);
     }
   }
+}
+
+// Re-rasterize the document we already have in memory (e.g. after a zoom),
+// skipping loadPdf()'s network fetch + parse — that re-fetch was what made
+// zooming feel like a reload.
+async function rerenderPdf() {
+  if (!state.pdfDoc) return loadPdf();
+  const token = ++state.pdfRenderToken;
+  try {
+    await renderLoadedPdf(state.pdfDoc, token);
+  } catch (err) {
+    console.error("PDF re-render failed", err);
+  }
+}
+
+// Render every page of an open PDF document. Pages are rasterized into a
+// detached fragment first, then swapped in atomically — so the currently
+// visible pages (possibly CSS-zoomed by a live pinch) stay on screen until the
+// crisp set is ready, and the swap/zoom-reset happen in the same frame with
+// identical geometry, avoiding any flash.
+async function renderLoadedPdf(pdf, token) {
+  state.pdfPageViewports = new Map();
+  const frag = document.createDocumentFragment();
+  for (let n = 1; n <= pdf.numPages; n += 1) {
+    const pageEl = document.createElement("div");
+    pageEl.className = "pdf-page";
+    pageEl.dataset.page = String(n - 1); // 0-based
+    frag.appendChild(pageEl);
+    await renderPdfPage(pdf, n, pageEl, token);
+    if (token !== state.pdfRenderToken) return; // superseded (new doc / new zoom)
+  }
+  state.pdfRenderedScale = state.pdfScale;
+  els.pdfPages.replaceChildren(frag);
+  els.pdfPages.style.zoom = ""; // drop the live preview; pages are now crisp
+  applyPdfLayout();
+  updatePdfPageInfo();
+  renderHighlights();
+  buildPdfMinimap();
+  updateMinimapActive();
 }
 
 async function renderPdfPage(pdf, pageNum, pageEl, token) {
@@ -2696,7 +2945,58 @@ function updatePdfPageInfo() {
 function setPdfScale(scale) {
   state.pdfScale = clamp(scale, 0.5, 3);
   localStorage.setItem("pdfScale", String(state.pdfScale));
-  loadPdf();
+  rerenderPdf();
+}
+
+// Rasterizing on every pinch tick would be janky, so the pinch zooms in real
+// time via a cheap CSS `zoom` on the page container (relative to the rasterized
+// scale) and only re-rasterizes to crisp pixels once the gesture settles.
+let pdfZoomRenderTimer = null;
+function schedulePdfZoomRender() {
+  if (pdfZoomRenderTimer) clearTimeout(pdfZoomRenderTimer);
+  pdfZoomRenderTimer = setTimeout(() => {
+    pdfZoomRenderTimer = null;
+    // The atomic swap in renderLoadedPdf keeps geometry identical (new pages are
+    // the same visual size as the CSS-zoomed preview), so the scroll position
+    // carries over untouched.
+    rerenderPdf();
+  }, 140);
+}
+
+// Apply the live CSS-zoom preview and keep the point under the cursor fixed.
+function applyPdfZoomPreview(clientX, clientY) {
+  if (!els.pdfPages || !els.pdfViewport) return;
+  const z1 = state.pdfScale / (state.pdfRenderedScale || state.pdfScale);
+  const vp = els.pdfViewport;
+  const rect = vp.getBoundingClientRect();
+  const mx = clientX - rect.left;
+  const my = clientY - rect.top;
+  const z0raw = Number(els.pdfPages.style.zoom);
+  const z0 = z0raw > 0 ? z0raw : 1;
+  els.pdfPages.style.zoom = String(z1);
+  // Keep the content under the cursor anchored: scroll offsets live in the
+  // zoomed coordinate space, so rescale (offset + cursor) by z1/z0.
+  const r = z1 / z0;
+  vp.scrollLeft = (vp.scrollLeft + mx) * r - mx;
+  vp.scrollTop = (vp.scrollTop + my) * r - my;
+}
+
+// Trackpad pinch (and Ctrl/⌘ + wheel) fire wheel events with ctrlKey set — zoom
+// the PDF instead of scrolling. Plain two-finger scroll is left untouched.
+function handlePdfWheelZoom(event) {
+  if (!event.ctrlKey) return;
+  event.preventDefault();
+  // Cancel any in-flight re-raster so it can't swap in a stale scale mid-gesture.
+  state.pdfRenderToken += 1;
+  const next = clamp(state.pdfScale * Math.exp(-event.deltaY * 0.01), 0.5, 3);
+  if (next === state.pdfScale) return;
+  state.pdfScale = next;
+  try {
+    localStorage.setItem("pdfScale", String(next));
+  } catch {}
+  applyPdfZoomPreview(event.clientX, event.clientY);
+  updatePdfPageInfo(); // live % feedback
+  schedulePdfZoomRender();
 }
 
 // Toggle between the default vertical page stack (scroll down through pages)
@@ -2975,7 +3275,10 @@ function highlightById(id) {
 }
 
 // Scroll the PDF viewer so a highlight's first rect is centered, mark it active,
-// and briefly flash it. Used when selecting a node that was asked from a quote.
+// and briefly flash it. Used when selecting a node asked from a quote and when
+// jumping to a note. Centers on both axes off live geometry (getBoundingClientRect
+// forces a reflow, so it is correct right after a pane opens or zoom changes) so it
+// works in the vertical and horizontal PDF layouts alike.
 function scrollToHighlight(hl) {
   if (!hl || !els.pdfViewport || !els.pdfPages) return;
   const pageEl = els.pdfPages.querySelector(`.pdf-page[data-page="${hl.page}"]`);
@@ -2984,10 +3287,21 @@ function scrollToHighlight(hl) {
   drawHighlightsForPage(hl.page);
   const rect = (hl.rects || [])[0];
   const viewport = els.pdfViewport;
-  // pageEl.offsetTop is relative to #pdfPages, which sits inside #pdfViewport.
-  const rectTop = pageEl.offsetTop + (rect ? rect.y * pageEl.clientHeight : 0);
-  const target = rectTop - viewport.clientHeight / 2 + (rect ? (rect.h * pageEl.clientHeight) / 2 : 0);
-  viewport.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  const vpRect = viewport.getBoundingClientRect();
+  const pageRect = pageEl.getBoundingClientRect();
+  // Highlight rect offset within the page, in current (zoomed) pixels.
+  const relX = rect ? rect.x * pageRect.width : 0;
+  const relY = rect ? rect.y * pageRect.height : 0;
+  const rectW = rect ? rect.w * pageRect.width : 0;
+  const rectH = rect ? rect.h * pageRect.height : 0;
+  // Absolute position of the rect within the scrollable content.
+  const contentY = pageRect.top - vpRect.top + viewport.scrollTop + relY;
+  const contentX = pageRect.left - vpRect.left + viewport.scrollLeft + relX;
+  viewport.scrollTo({
+    top: Math.max(0, contentY - viewport.clientHeight / 2 + rectH / 2),
+    left: Math.max(0, contentX - viewport.clientWidth / 2 + rectW / 2),
+    behavior: "smooth",
+  });
 }
 
 // When a node is linked to a source highlight, reveal and jump to that quote.
@@ -3320,6 +3634,7 @@ function wireEvents() {
   // ── PDF zoom / selection / highlights ──
   els.pdfZoomInBtn.addEventListener("click", () => setPdfScale(state.pdfScale * 1.15));
   els.pdfZoomOutBtn.addEventListener("click", () => setPdfScale(state.pdfScale / 1.15));
+  if (els.pdfViewport) els.pdfViewport.addEventListener("wheel", handlePdfWheelZoom, { passive: false });
   if (els.pdfLayoutBtn) els.pdfLayoutBtn.addEventListener("click", togglePdfLayout);
   if (els.pdfMinimapBtn) els.pdfMinimapBtn.addEventListener("click", toggleMinimap);
   if (els.pdfChromeToggle) els.pdfChromeToggle.addEventListener("click", () => setPdfChromeHidden(true));
@@ -3461,8 +3776,19 @@ function wireEvents() {
     const rect = els.canvasHost.getBoundingClientRect();
     zoomAt(0.86, rect.left + rect.width / 2, rect.top + rect.height / 2);
   });
+  els.renameBtn.addEventListener("click", renameSelected);
   els.deleteBtn.addEventListener("click", deleteSelected);
   els.exportBtn.addEventListener("click", exportSelected);
+
+  els.eventsDownloadBtn.addEventListener("click", downloadEventsJson);
+  els.eventsCopyBtn.addEventListener("click", copyEventsJson);
+  els.eventsCloseBtn.addEventListener("click", closeEventsModal);
+  els.eventsModal.addEventListener("click", (event) => {
+    if (event.target.closest("[data-events-close]")) closeEventsModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !els.eventsModal.hidden) closeEventsModal();
+  });
 
   els.treeSvg.addEventListener("wheel", (event) => {
     event.preventDefault();

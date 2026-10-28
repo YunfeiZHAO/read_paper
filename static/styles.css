@@ -1211,14 +1211,17 @@ button.meta-pill {
 
 /* The source quote shown above a highlight's note in the side panel. */
 .note-highlight-quote {
-  margin: 0 0 10px;
-  padding: 6px 10px;
+  margin: 0 0 8px;
+  padding: 3px 8px;
   border-left: 3px solid var(--blue);
   background: rgba(58, 110, 165, 0.08);
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--muted);
   white-space: pre-wrap;
+  max-height: 64px;
+  overflow-y: auto;
 }
 
 .typing-dots {
@@ -1357,6 +1360,102 @@ button.meta-pill {
   white-space: nowrap;
 }
 
+.doc-notes {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfaf7;
+}
+
+.doc-notes-summary {
+  cursor: pointer;
+  padding: 9px 11px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 17px;
+  list-style: none;
+  user-select: none;
+}
+
+.doc-notes-summary::-webkit-details-marker {
+  display: none;
+}
+
+.doc-notes-summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--muted, #8a8575);
+  transition: transform 0.12s ease;
+}
+
+.doc-notes[open] > .doc-notes-summary::before {
+  transform: rotate(90deg);
+}
+
+.doc-notes-body {
+  display: grid;
+  gap: 8px;
+  padding: 2px 10px 10px;
+}
+
+.doc-note-item {
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.doc-note-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.doc-note-title:hover .doc-note-label {
+  text-decoration: underline;
+}
+
+.doc-note-title.doc-note-no-anchor {
+  cursor: default;
+}
+
+.doc-note-title.doc-note-no-anchor:hover .doc-note-label {
+  text-decoration: none;
+}
+
+.doc-note-kind {
+  flex: 0 0 auto;
+  min-width: 26px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--line);
+  color: var(--muted, #6b6655);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.doc-note-kind-highlight {
+  background: #fff0c2;
+  color: #8a6d00;
+}
+
+.doc-note-label {
+  overflow: hidden;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .note-context-menu {
   position: fixed;
   z-index: 30;
@@ -1418,6 +1517,20 @@ button.meta-pill {
   background: #fffdfa;
   box-shadow: var(--shadow);
   color: var(--text);
+}
+
+.node-prompt-preview-quote {
+  margin: 0 0 8px;
+  padding: 3px 8px;
+  border-left: 3px solid var(--blue);
+  background: rgba(58, 110, 165, 0.08);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  max-height: 96px;
+  overflow-y: auto;
 }
 
 .node-prompt-preview pre {
