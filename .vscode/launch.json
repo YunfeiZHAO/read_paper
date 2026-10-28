@@ -12,7 +12,8 @@
       },
       "envFile": "${workspaceFolder}/.env",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/bin/python"
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "preLaunchTask": "uv sync"
     }
   ]
 }

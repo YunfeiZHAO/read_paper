@@ -274,6 +274,40 @@ pre {
   background: #7a4ca8;
 }
 
+.web-search-toggle {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  height: 28px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.web-search-toggle button {
+  min-width: 48px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.web-search-toggle button + button {
+  border-left: 1px solid var(--line);
+}
+
+.web-search-toggle button[data-web-search="off"].active {
+  background: #6b7280;
+  color: #fffdfa;
+}
+
+.web-search-toggle button[data-web-search="on"].active {
+  background: #2f7d5b;
+  color: #fffdfa;
+}
+
 body.mode-claude_code .composer,
 body.mode-claude_code #ccImportBtn[hidden] {
   display: none !important;
@@ -765,6 +799,7 @@ body.mode-claude_code .conversation-list::before {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .selected-files {
@@ -814,7 +849,7 @@ body.mode-claude_code .conversation-list::before {
 
 .composer-row {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 84px;
+  grid-template-columns: minmax(0, 1fr) 84px;
   align-items: stretch;
   gap: 8px;
   padding: 8px;
@@ -1949,10 +1984,319 @@ button.meta-pill {
   }
 
   .composer-row {
-    grid-template-columns: 38px minmax(0, 1fr) 72px;
+    grid-template-columns: minmax(0, 1fr) 72px;
   }
 
   #sendBtn {
     grid-column: auto;
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   三栏布局 (PDF │ 树 │ 对话) + PDF 阅读器 + 高亮
+   ══════════════════════════════════════════════════════════════════════ */
+
+.panes-layout {
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane > .pane-inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane > .pane-rail { display: none; }
+
+/* 展开时各栏的尺寸 */
+.pdf-pane { flex: 0 0 auto; flex-basis: 560px; background: #e9e8e3; border-right: 1px solid var(--line); }
+.canvas-column.pane { flex: 1 1 0; min-width: 160px; }
+.side-panel.pane { flex: 0 0 var(--side-panel-width, 420px); }
+
+/* 折叠 → 细条 rail */
+.pane.collapsed { flex: 0 0 34px !important; min-width: 34px; }
+.pane.collapsed > .pane-inner { display: none; }
+.pane.collapsed > .pane-rail {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14px;
+  cursor: pointer;
+  background: var(--panel);
+}
+.pane.collapsed > .pane-rail:hover { background: #f0eee8; }
+.pane-rail-btn {
+  writing-mode: vertical-rl;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--ink-soft, #555);
+}
+
+/* pane 内部网格:标题(auto) + 主体(1fr) */
+.pdf-pane .pane-inner,
+.canvas-column .pane-inner,
+.side-panel .pane-inner {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.side-panel.pane { display: flex; }
+
+.pane-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.pane-heading h2 { margin: 0; font-size: 14px; line-height: 20px; }
+.pane-heading .panel-actions { display: flex; align-items: center; gap: 6px; }
+.pdf-page-info { font-size: 11px; color: var(--ink-soft, #666); margin-right: 4px; }
+
+/* 栏显隐开关 */
+.pane-visibility { display: inline-flex; gap: 4px; margin-right: 8px; }
+.pane-toggle {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--ink-soft, #666);
+}
+.pane-toggle.active { background: var(--blue, #3a6ea5); color: #fff; border-color: transparent; }
+
+.pane-resize-handle {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 8px;
+  cursor: col-resize;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+.pane-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 52px;
+  border-radius: 999px;
+  background: var(--line-strong, #bbb);
+  opacity: 0.48;
+  transform: translate(-50%, -50%);
+}
+.pane-resize-handle:hover::before { background: var(--blue, #3a6ea5); opacity: 0.82; }
+
+/* 顶栏 PDF 上传按钮 */
+.doc-upload {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px dashed var(--line-strong, #bbb);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-soft, #555);
+  white-space: nowrap;
+}
+.doc-upload:hover { border-color: var(--blue, #3a6ea5); color: var(--blue, #3a6ea5); }
+
+/* ── PDF 阅读区 ── */
+.pdf-viewport {
+  position: relative;
+  overflow: auto;
+  padding: 16px;
+  background: #e9e8e3;
+}
+.pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 16px; min-width: min-content; }
+/* 页面比视口宽时,居中会把左边裁掉;改为左对齐以保证左缘可见、向右滚动。 */
+.pdf-viewport { display: flex; flex-direction: column; }
+.pdf-pages { margin: 0 auto; }
+.pdf-page {
+  position: relative;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+}
+.pdf-canvas { display: block; }
+
+.pdf-hl-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.pdf-hl {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  mix-blend-mode: multiply;
+  border-radius: 1px;
+  transition: filter 0.1s ease;
+}
+.pdf-hl.has-node { box-shadow: inset 0 -2px 0 rgba(58, 110, 165, 0.7); }
+.pdf-hl.active { filter: brightness(0.9); }
+.pdf-hl:hover { filter: brightness(0.92); }
+.hl-yellow { background: #ffe169; }
+.hl-green { background: #aee6a0; }
+.hl-blue { background: #a9d4ff; }
+.hl-pink { background: #ffb3c7; }
+
+.pdf-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-soft, #777);
+}
+.pdf-empty[hidden] { display: none; }
+.pdf-empty-inner { text-align: center; }
+.pdf-empty-inner button {
+  margin-top: 10px;
+  padding: 8px 16px;
+  border: 1px solid var(--blue, #3a6ea5);
+  color: var(--blue, #3a6ea5);
+  background: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pdf-error { padding: 24px; color: var(--red, #b6542f); font-size: 13px; }
+
+/* ── PDF.js 文字层(可选中、透明覆盖在 canvas 上)── */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0.25;
+  line-height: 1;
+  z-index: 2;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+}
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+.textLayer ::selection { background: rgba(58, 110, 165, 0.35); }
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: -1;
+  cursor: default;
+  user-select: none;
+}
+
+/* ── 选区浮动工具条 ── */
+.selection-toolbar {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #23262b;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.selection-toolbar[hidden] { display: none; }
+.selection-toolbar button {
+  border: none;
+  background: #3a3f46;
+  color: #fff;
+  border-radius: 7px;
+  padding: 5px 11px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.selection-toolbar button:hover { background: #4a505a; }
+.selection-colors { display: inline-flex; gap: 4px; margin-left: 2px; }
+.hl-color {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--c, #ffe169);
+  cursor: pointer;
+}
+.hl-color.active { border-color: #fff; }
+
+/* ── 高亮右键菜单 ── */
+.highlight-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 150px;
+  padding: 6px;
+  background: var(--panel, #fff);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+.highlight-menu[hidden] { display: none; }
+.hl-menu-colors { display: flex; gap: 6px; padding: 4px 6px 8px; }
+.hl-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 7px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--ink, #222);
+}
+.hl-menu-item:hover { background: #f0eee8; }
+.hl-menu-item.danger { color: var(--red, #b6542f); }
+
+/* ── 组合框里的"引用原文"芯片 ── */
+.pending-quote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  background: #fbf6dd;
+  border: 1px solid #e7dca0;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.pending-quote-label { flex: 0 0 auto; color: #8a7a2e; font-weight: 600; }
+.pending-quote-text { flex: 1 1 auto; min-width: 0; color: #5c5330; line-height: 1.35; }
+.pending-quote-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  color: #8a7a2e;
 }

@@ -52,6 +52,9 @@ CLAUDE_MAX_TOOL_ITERATIONS = int(os.environ.get("CLAUDE_MAX_TOOL_ITERATIONS", "4
 
 # ── 通用 ────────────────────────────────────────────────────────────────
 BACKENDS = {"codex", "claude"}
+# web_search 工具默认开关(Codex 的 --search / Claude 的 web_search 工具通用)。
+# 前端每次提问可逐次覆盖;此默认值仅在前端未明确选择时生效。默认关闭。
+ENABLE_WEB_SEARCH = os.environ.get("ENABLE_WEB_SEARCH", "false").strip().lower() in {"1", "true", "yes", "on"}
 MAX_CONTENT_LENGTH = int(os.environ.get("CODEX_QA_MAX_UPLOAD_MB", "80")) * 1024 * 1024
 TEXT_EXCERPT_BYTES = int(os.environ.get("CODEX_QA_TEXT_EXCERPT_BYTES", "60000"))
 WORKSPACE_TEXT_PREVIEW_BYTES = int(os.environ.get("CODEX_QA_WORKSPACE_TEXT_PREVIEW_BYTES", "524288"))

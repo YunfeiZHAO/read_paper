@@ -16,7 +16,7 @@ from ..config import (
     WORK_DIR,
     PooledCodexClient,
 )
-from ..db import add_account_usage, get_files, get_node, update_node
+from ..db import add_account_usage, get_files, get_highlight, get_node, update_node
 from ..events import (
     collect_tools_count,
     collect_usage,
@@ -28,6 +28,11 @@ from ..events import (
 from ..prompts import build_codex_prompt
 from ..utils import now_iso
 from ..workspace import record_workspace_changes, workspace_snapshot
+
+
+def _codex_search_args(enabled: bool) -> List[str]:
+    """开启联网搜索时返回 ["--search"],否则返回空(不给 codex 传该 flag)。"""
+    return ["--search"] if enabled else []
 
 
 async def _run_codex_for_node_async(node_id: str) -> None:
@@ -45,7 +50,13 @@ async def _run_codex_for_node_async(node_id: str) -> None:
         return
 
     files = get_files([item["id"] for item in node.get("attachments", [])])
-    prompt_text = build_codex_prompt(node.get("parent_id"), node["prompt"], files, node.get("workspace_refs") or [])
+    quote = ""
+    if node.get("source_highlight_id"):
+        hl = get_highlight(node["source_highlight_id"])
+        quote = (hl or {}).get("quote") or ""
+    prompt_text = build_codex_prompt(
+        node.get("parent_id"), node["prompt"], files, node.get("workspace_refs") or [], quote=quote
+    )
     run_path = RUN_DIR / node_id
     run_path.mkdir(parents=True, exist_ok=True)
     final_message_path = run_path / "final.md"
@@ -75,7 +86,7 @@ async def _run_codex_for_node_async(node_id: str) -> None:
 
             cmd = [
                 "codex",
-                "--search",
+                *_codex_search_args(bool(node.get("enable_web_search"))),
                 "-c",
                 f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
                 "-c",

@@ -58,7 +58,13 @@ def inherited_attachment_files(nodes: List[Dict[str, Any]]) -> List[Dict[str, An
     return get_files(file_ids)
 
 
-def build_codex_prompt(parent_id: Optional[str], prompt: str, files: List[Dict[str, Any]], workspace_refs: List[Dict[str, Any]]) -> str:
+def build_codex_prompt(
+    parent_id: Optional[str],
+    prompt: str,
+    files: List[Dict[str, Any]],
+    workspace_refs: List[Dict[str, Any]],
+    quote: str = "",
+) -> str:
     inherited = path_to_node(parent_id)
     inherited_files = inherited_attachment_files(inherited)
     lines = [
@@ -97,6 +103,20 @@ def build_codex_prompt(parent_id: Optional[str], prompt: str, files: List[Dict[s
             "",
             "## 本次 Workspace 引用",
             make_workspace_ref_context(workspace_refs),
+        ]
+    )
+    if quote.strip():
+        lines.extend(
+            [
+                "",
+                "## 用户选中的 PDF 原文",
+                "（用户从正在阅读的论文里选中了下面这段文字,并就其提问）",
+                "",
+                "> " + quote.strip().replace("\n", "\n> "),
+            ]
+        )
+    lines.extend(
+        [
             "",
             "## 当前用户问题",
             prompt.strip(),

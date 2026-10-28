@@ -9,23 +9,38 @@ const DEFAULT_SIDE_WIDTH = 420;
 const MIN_SIDE_WIDTH = 240;
 const MAX_SIDE_WIDTH = 920;
 
+const PANE_KEYS = ["pdf", "tree", "chat"];
+function loadPaneState() {
+  const out = { pdf: true, tree: true, chat: true };
+  try {
+    const raw = JSON.parse(localStorage.getItem("paneOpen") || "{}");
+    for (const key of PANE_KEYS) if (typeof raw[key] === "boolean") out[key] = raw[key];
+  } catch {}
+  return out;
+}
+
 const state = {
   allNodes: [],
   nodes: [],
-  projects: [],
   files: [],
-  workspaceFiles: [],
-  workspaceLoading: false,
-  workspaceError: "",
-  workspacePreviewFile: null,
-  workspaceOpen: localStorage.getItem("workspaceDrawerOpen") === "1",
   workDir: "",
-  selectedProjectId: "__new__",
+  // ── PDF / 文档 ──
+  documents: [],
+  currentDocId: localStorage.getItem("currentDocId") || null,
+  pdfDoc: null,
+  pdfScale: Number(localStorage.getItem("pdfScale")) || 1.3,
+  pdfRenderToken: 0,
+  pdfPageViewports: new Map(),
+  highlights: [],
+  pendingSelection: null, // {quote, page, rects, color}
+  activeHighlightId: null,
+  paneOpen: loadPaneState(),
   selectedId: null,
   parentId: null,
   fileIds: new Set(),
   workspaceRefs: [],
   selectedBackend: localStorage.getItem("askBackend") === "claude" ? "claude" : "codex",
+  enableWebSearch: localStorage.getItem("askWebSearch") === "on",
   layout: new Map(),
   nodeById: new Map(),
   childrenByParent: new Map(),
@@ -62,6 +77,7 @@ const els = {
   searchInput: document.getElementById("searchInput"),
   directionBtns: document.querySelectorAll("[data-direction]"),
   backendBtns: document.querySelectorAll("[data-backend]"),
+  webSearchBtns: document.querySelectorAll("[data-web-search]"),
   focusBtn: document.getElementById("focusBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   zoomInBtn: document.getElementById("zoomInBtn"),
@@ -98,23 +114,29 @@ const els = {
   nodePromptPreview: document.getElementById("nodePromptPreview"),
   deleteBtn: document.getElementById("deleteBtn"),
   exportBtn: document.getElementById("exportBtn"),
-  fileInput: document.getElementById("fileInput"),
-  workspaceDrawer: document.getElementById("workspaceDrawer"),
-  workspaceToggleBtn: document.getElementById("workspaceToggleBtn"),
-  workspaceCollapseBtn: document.getElementById("workspaceCollapseBtn"),
-  workspaceRefreshBtn: document.getElementById("workspaceRefreshBtn"),
-  workspaceFileList: document.getElementById("workspaceFileList"),
-  workspacePreview: document.getElementById("workspacePreview"),
-  workspacePreviewBackdrop: document.getElementById("workspacePreviewBackdrop"),
-  workspacePreviewCloseBtn: document.getElementById("workspacePreviewCloseBtn"),
-  workspacePreviewTitle: document.getElementById("workspacePreviewTitle"),
-  workspacePreviewMeta: document.getElementById("workspacePreviewMeta"),
-  workspacePreviewBody: document.getElementById("workspacePreviewBody"),
-  workspaceOpenBtn: document.getElementById("workspaceOpenBtn"),
-  workspaceDownloadBtn: document.getElementById("workspaceDownloadBtn"),
-  modeLiveBtn: document.getElementById("modeLiveBtn"),
-  modeHistoryBtn: document.getElementById("modeHistoryBtn"),
-  ccImportBtn: document.getElementById("ccImportBtn"),
+  // ── 文档 / PDF ──
+  documentSelect: document.getElementById("documentSelect"),
+  docUploadInput: document.getElementById("docUploadInput"),
+  docDeleteBtn: document.getElementById("docDeleteBtn"),
+  pdfPane: document.getElementById("pdfPane"),
+  pdfResizeHandle: document.getElementById("pdfResizeHandle"),
+  pdfViewport: document.getElementById("pdfViewport"),
+  pdfPages: document.getElementById("pdfPages"),
+  pdfEmpty: document.getElementById("pdfEmpty"),
+  pdfEmptyUploadBtn: document.getElementById("pdfEmptyUploadBtn"),
+  pdfPageInfo: document.getElementById("pdfPageInfo"),
+  pdfZoomInBtn: document.getElementById("pdfZoomInBtn"),
+  pdfZoomOutBtn: document.getElementById("pdfZoomOutBtn"),
+  treePane: document.getElementById("treePane"),
+  selectionToolbar: document.getElementById("selectionToolbar"),
+  selHighlightBtn: document.getElementById("selHighlightBtn"),
+  selAskBtn: document.getElementById("selAskBtn"),
+  highlightMenu: document.getElementById("highlightMenu"),
+  hlGotoNodeBtn: document.getElementById("hlGotoNodeBtn"),
+  hlDeleteBtn: document.getElementById("hlDeleteBtn"),
+  togglePdfBtn: document.getElementById("togglePdfBtn"),
+  toggleTreeBtn: document.getElementById("toggleTreeBtn"),
+  toggleChatBtn: document.getElementById("toggleChatBtn"),
 };
 
 function svgEl(name) {
@@ -496,23 +518,44 @@ function parentNode() {
   return state.nodeById.get(state.parentId) || null;
 }
 
-async function fetchTree({ keepSelection = true } = {}) {
-  if (state.mode === "claude_code") {
-    if (state.ccPath) await fetchClaudeCodeTree(state.ccPath, { keepSelection });
-    return;
+async function fetchDocuments() {
+  try {
+    const res = await fetch("/api/documents");
+    const data = await res.json();
+    state.documents = data.documents || [];
+  } catch (err) {
+    console.error(err);
+    state.documents = [];
   }
+  // 校正当前文档:无效则回退到第一篇(或 null)。
+  if (state.currentDocId && !state.documents.some((d) => d.id === state.currentDocId)) {
+    state.currentDocId = null;
+  }
+  if (!state.currentDocId && state.documents.length) {
+    state.currentDocId = state.documents[0].id;
+  }
+  if (state.currentDocId) localStorage.setItem("currentDocId", state.currentDocId);
+  else localStorage.removeItem("currentDocId");
+}
+
+function nodesForDocument(docId) {
+  if (!docId) return [];
+  return state.allNodes
+    .filter((node) => node.document_id === docId)
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+
+async function fetchTree({ keepSelection = true } = {}) {
   const res = await fetch("/api/tree");
   const data = await res.json();
   state.allNodes = data.nodes || [];
   state.files = data.files || [];
   state.workDir = data.work_dir || "";
-  rebuildProjects();
-  ensureSelectedProject(keepSelection);
-  state.nodes = nodesForProject(state.selectedProjectId);
+  state.nodes = nodesForDocument(state.currentDocId);
   rebuildIndexes();
 
   if (!keepSelection || (state.selectedId && !state.nodeById.has(state.selectedId))) {
-    state.selectedId = state.selectedProjectId === "__new__" ? null : state.selectedProjectId;
+    state.selectedId = null;
   }
   if (state.parentId && !state.nodeById.has(state.parentId)) {
     state.parentId = state.selectedId;
@@ -522,6 +565,38 @@ async function fetchTree({ keepSelection = true } = {}) {
     state.parentId = state.selectedId;
   }
   render();
+}
+
+async function fetchHighlights() {
+  if (!state.currentDocId) {
+    state.highlights = [];
+    renderHighlights();
+    return;
+  }
+  try {
+    const res = await fetch(`/api/documents/${state.currentDocId}/highlights`);
+    const data = await res.json();
+    state.highlights = data.highlights || [];
+  } catch (err) {
+    console.error(err);
+    state.highlights = [];
+  }
+  renderHighlights();
+}
+
+async function selectDocument(docId, { keepNode = false } = {}) {
+  state.currentDocId = docId || null;
+  if (docId) localStorage.setItem("currentDocId", docId);
+  else localStorage.removeItem("currentDocId");
+  if (!keepNode) {
+    state.selectedId = null;
+    state.parentId = null;
+  }
+  state.pendingSelection = null;
+  state.activeHighlightId = null;
+  await Promise.all([fetchTree({ keepSelection: keepNode }), fetchHighlights(), loadPdf()]);
+  renderDocumentSelect();
+  renderComposer();
 }
 
 async function fetchClaudeCodeTree(path, { keepSelection = false } = {}) {
@@ -734,13 +809,38 @@ function render() {
   renderSideTabs();
   renderNotePanel();
   renderComposer();
-  renderWorkspaceFiles();
-  renderWorkspaceDrawer();
-  renderProjectSelect();
+  renderDocumentSelect();
   renderDirectionControls();
   renderBackendControls();
-  els.workspaceLabel.textContent = state.workDir ? state.workDir : "";
+  renderWebSearchControls();
+  renderHighlights();
+  const doc = currentDocument();
+  els.workspaceLabel.textContent = doc ? (doc.title || doc.original_name || "") : "";
   els.emptyState.classList.toggle("visible", state.nodes.length === 0);
+}
+
+function currentDocument() {
+  return state.documents.find((d) => d.id === state.currentDocId) || null;
+}
+
+function renderDocumentSelect() {
+  if (!els.documentSelect) return;
+  const options = [];
+  if (!state.documents.length) {
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "上传 PDF →";
+    options.push(empty);
+  }
+  for (const doc of state.documents) {
+    const option = document.createElement("option");
+    option.value = doc.id;
+    option.textContent = compact(doc.title || doc.original_name || "未命名", 36);
+    options.push(option);
+  }
+  els.documentSelect.replaceChildren(...options);
+  els.documentSelect.value = state.currentDocId || "";
+  if (els.docDeleteBtn) els.docDeleteBtn.disabled = !state.currentDocId;
 }
 
 function renderWorkspaceDrawer() {
@@ -1668,28 +1768,27 @@ function renderConversation() {
 
 function renderComposer() {
   els.selectedFiles.replaceChildren();
-  for (const fileId of state.fileIds) {
-    const file = state.files.find((item) => item.id === fileId);
-    if (!file) continue;
-    const chip = makeCompactFileChip(
-      {
-        name: file.original_name,
-        kind: fileKindForName(file.original_name),
-      },
-      true,
-      () => {
-        state.fileIds.delete(fileId);
-        renderComposer();
-      }
-    );
-    els.selectedFiles.appendChild(chip);
-  }
-  for (const ref of state.workspaceRefs) {
-    const chip = makeCompactFileChip(ref, true, () => {
-      state.workspaceRefs = state.workspaceRefs.filter((item) => item.path !== ref.path);
+  const sel = state.pendingSelection;
+  if (sel && sel.quote) {
+    const cite = document.createElement("div");
+    cite.className = "pending-quote";
+    const label = document.createElement("span");
+    label.className = "pending-quote-label";
+    label.textContent = `原文 · 第${(sel.page || 0) + 1}页`;
+    const text = document.createElement("span");
+    text.className = "pending-quote-text";
+    text.textContent = compact(sel.quote, 160);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "pending-quote-remove";
+    remove.textContent = "×";
+    remove.title = "取消引用";
+    remove.addEventListener("click", () => {
+      state.pendingSelection = null;
       renderComposer();
     });
-    els.selectedFiles.appendChild(chip);
+    cite.append(label, text, remove);
+    els.selectedFiles.appendChild(cite);
   }
   els.sendBtn.disabled = state.sending;
 }
@@ -1995,40 +2094,51 @@ function renderBackendControls() {
   }
 }
 
+function renderWebSearchControls() {
+  const current = state.enableWebSearch ? "on" : "off";
+  for (const button of els.webSearchBtns) {
+    button.classList.toggle("active", button.dataset.webSearch === current);
+  }
+}
+
 async function sendPrompt(event) {
   event.preventDefault();
-  if (state.mode === "claude_code") return;
   const prompt = els.promptInput.value.trim();
   if (!prompt || state.sending) return;
+  if (!state.currentDocId) {
+    window.alert("请先上传并选择一篇 PDF");
+    return;
+  }
   state.sending = true;
   renderComposer();
   try {
+    // 若引用了尚未保存的选区,先落盘为高亮,拿到其 id 以便与问答节点关联。
+    let highlightId = state.pendingSelection ? state.pendingSelection.highlightId || null : null;
+    if (state.pendingSelection && !highlightId) {
+      highlightId = await persistHighlight(state.pendingSelection);
+    }
+
     const res = await fetch("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         parent_id: state.parentId,
         prompt,
-        file_ids: [...state.fileIds],
-        workspace_refs: state.workspaceRefs.map((item) => ({ path: item.path })),
         backend: state.selectedBackend,
+        enable_web_search: state.enableWebSearch,
+        document_id: state.currentDocId,
+        source_highlight_id: highlightId,
       }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "发送失败");
+    if (!res.ok) throw new Error(data.detail || data.error || "发送失败");
     state.selectedId = data.node.id;
     state.parentId = data.node.id;
-    if (!data.node.parent_id) {
-      state.selectedProjectId = data.node.id;
-      localStorage.setItem("selectedProjectId", state.selectedProjectId);
-    }
-    state.fileIds.clear();
-    state.workspaceRefs = [];
+    state.pendingSelection = null;
     els.promptInput.value = "";
     state.scrollConversationToLatest = true;
-    await fetchTree();
+    await Promise.all([fetchTree(), fetchHighlights()]);
     focusSelected();
-    await fetchWorkspaceFiles();
   } catch (err) {
     window.alert(err.message);
   } finally {
@@ -2406,6 +2516,428 @@ function pollIfNeeded() {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════
+//  PDF 阅读 + 文字选择 + 高亮
+// ══════════════════════════════════════════════════════════════════════
+
+const HL_COLORS = ["yellow", "green", "blue", "pink"];
+let pdfSelColor = localStorage.getItem("hlColor") || "yellow";
+
+if (window.pdfjsLib) {
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = "/static/vendor/pdfjs/pdf.worker.min.js";
+}
+
+async function loadPdf() {
+  const token = ++state.pdfRenderToken;
+  state.pdfPageViewports = new Map();
+  if (els.pdfPages) els.pdfPages.replaceChildren();
+  const docId = state.currentDocId;
+  if (!docId || !window.pdfjsLib) {
+    state.pdfDoc = null;
+    if (els.pdfEmpty) els.pdfEmpty.hidden = Boolean(docId);
+    updatePdfPageInfo();
+    return;
+  }
+  if (els.pdfEmpty) els.pdfEmpty.hidden = true;
+  try {
+    const task = window.pdfjsLib.getDocument({ url: `/api/documents/${docId}/file` });
+    const pdf = await task.promise;
+    if (token !== state.pdfRenderToken) return; // 期间切换了文档
+    state.pdfDoc = pdf;
+    for (let n = 1; n <= pdf.numPages; n += 1) {
+      const pageEl = document.createElement("div");
+      pageEl.className = "pdf-page";
+      pageEl.dataset.page = String(n - 1); // 0-based
+      els.pdfPages.appendChild(pageEl);
+      await renderPdfPage(pdf, n, pageEl, token);
+      if (token !== state.pdfRenderToken) return;
+    }
+    updatePdfPageInfo();
+    renderHighlights();
+  } catch (err) {
+    console.error("PDF 加载失败", err);
+    if (els.pdfPages) {
+      const msg = document.createElement("div");
+      msg.className = "pdf-error";
+      msg.textContent = `PDF 加载失败：${err.message || err}`;
+      els.pdfPages.replaceChildren(msg);
+    }
+  }
+}
+
+async function renderPdfPage(pdf, pageNum, pageEl, token) {
+  const page = await pdf.getPage(pageNum);
+  if (token !== state.pdfRenderToken) return;
+  const viewport = page.getViewport({ scale: state.pdfScale });
+  state.pdfPageViewports.set(pageNum - 1, { width: viewport.width, height: viewport.height });
+  pageEl.style.width = `${viewport.width}px`;
+  pageEl.style.height = `${viewport.height}px`;
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "pdf-canvas";
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(viewport.width * ratio);
+  canvas.height = Math.floor(viewport.height * ratio);
+  canvas.style.width = `${viewport.width}px`;
+  canvas.style.height = `${viewport.height}px`;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(ratio, ratio);
+  pageEl.appendChild(canvas);
+
+  const textLayer = document.createElement("div");
+  textLayer.className = "textLayer";
+  pageEl.appendChild(textLayer);
+
+  const hlLayer = document.createElement("div");
+  hlLayer.className = "pdf-hl-layer";
+  pageEl.appendChild(hlLayer);
+
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  if (token !== state.pdfRenderToken) return;
+  try {
+    const textContent = await page.getTextContent();
+    if (token !== state.pdfRenderToken) return;
+    await window.pdfjsLib.renderTextLayer({
+      textContent,
+      container: textLayer,
+      viewport,
+      textDivs: [],
+    }).promise;
+  } catch (err) {
+    console.warn("文字层渲染失败", err);
+  }
+  drawHighlightsForPage(pageNum - 1);
+}
+
+function updatePdfPageInfo() {
+  if (!els.pdfPageInfo) return;
+  const n = state.pdfDoc ? state.pdfDoc.numPages : 0;
+  els.pdfPageInfo.textContent = n ? `${n} 页 · ${Math.round(state.pdfScale * 100)}%` : "";
+}
+
+function setPdfScale(scale) {
+  state.pdfScale = clamp(scale, 0.5, 3);
+  localStorage.setItem("pdfScale", String(state.pdfScale));
+  loadPdf();
+}
+
+// ── 选择 → 浮动工具条 ──────────────────────────────────────────────────
+
+function pageElForNode(node) {
+  const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+  return el ? el.closest(".pdf-page") : null;
+}
+
+function handlePdfMouseUp() {
+  // 延后到选择稳定后再读取。
+  setTimeout(() => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) {
+      if (!state.pendingSelection) hideSelectionToolbar();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const quote = sel.toString().trim();
+    if (!quote) {
+      hideSelectionToolbar();
+      return;
+    }
+    const pageEl = pageElForNode(range.startContainer) || pageElForNode(range.endContainer);
+    if (!pageEl) {
+      hideSelectionToolbar();
+      return;
+    }
+    const page = Number(pageEl.dataset.page);
+    const pageRect = pageEl.getBoundingClientRect();
+    const rects = [];
+    for (const r of range.getClientRects()) {
+      // 只保留落在该页内的片段。
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      if (cx < pageRect.left || cx > pageRect.right || cy < pageRect.top || cy > pageRect.bottom) continue;
+      if (r.width < 1 || r.height < 1) continue;
+      rects.push({
+        x: (r.left - pageRect.left) / pageRect.width,
+        y: (r.top - pageRect.top) / pageRect.height,
+        w: r.width / pageRect.width,
+        h: r.height / pageRect.height,
+      });
+    }
+    if (!rects.length) {
+      hideSelectionToolbar();
+      return;
+    }
+    state.pendingSelection = { quote, page, rects, color: pdfSelColor };
+    showSelectionToolbar(range);
+  }, 0);
+}
+
+function showSelectionToolbar(range) {
+  const bar = els.selectionToolbar;
+  if (!bar) return;
+  const rects = range.getClientRects();
+  const last = rects[rects.length - 1] || range.getBoundingClientRect();
+  bar.hidden = false;
+  syncSelColorButtons(bar);
+  const barRect = bar.getBoundingClientRect();
+  let left = last.left + last.width / 2 - barRect.width / 2;
+  let top = last.bottom + 8;
+  left = clamp(left, 8, window.innerWidth - barRect.width - 8);
+  if (top + barRect.height > window.innerHeight - 8) top = last.top - barRect.height - 8;
+  bar.style.left = `${left}px`;
+  bar.style.top = `${top}px`;
+}
+
+function hideSelectionToolbar() {
+  if (els.selectionToolbar) els.selectionToolbar.hidden = true;
+}
+
+function syncSelColorButtons(container) {
+  container.querySelectorAll(".hl-color").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.color === pdfSelColor);
+  });
+}
+
+async function persistHighlight(sel) {
+  const res = await fetch(`/api/documents/${state.currentDocId}/highlights`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ page: sel.page, rects: sel.rects, quote: sel.quote, color: sel.color || pdfSelColor }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || data.error || "保存高亮失败");
+  state.highlights.push(data.highlight);
+  drawHighlightsForPage(sel.page);
+  return data.highlight.id;
+}
+
+async function highlightSelection() {
+  if (!state.pendingSelection) return;
+  try {
+    await persistHighlight(state.pendingSelection);
+  } catch (err) {
+    window.alert(err.message);
+    return;
+  }
+  state.pendingSelection = null;
+  hideSelectionToolbar();
+  window.getSelection()?.removeAllRanges();
+}
+
+function askFromSelection() {
+  if (!state.pendingSelection) return;
+  hideSelectionToolbar();
+  window.getSelection()?.removeAllRanges();
+  renderComposer();
+  if (!state.paneOpen.chat) setPaneOpen("chat", true);
+  els.promptInput.focus();
+}
+
+// ── 高亮叠加层渲染 ─────────────────────────────────────────────────────
+
+function renderHighlights() {
+  if (!state.pdfDoc) return;
+  const pages = new Set(state.highlights.map((h) => h.page));
+  for (const page of pages) drawHighlightsForPage(page);
+  // 也要清掉已无高亮的页。
+  if (els.pdfPages) {
+    els.pdfPages.querySelectorAll(".pdf-page").forEach((pageEl) => {
+      const page = Number(pageEl.dataset.page);
+      if (!pages.has(page)) {
+        const layer = pageEl.querySelector(".pdf-hl-layer");
+        if (layer) layer.replaceChildren();
+      }
+    });
+  }
+}
+
+function drawHighlightsForPage(page) {
+  if (!els.pdfPages) return;
+  const pageEl = els.pdfPages.querySelector(`.pdf-page[data-page="${page}"]`);
+  if (!pageEl) return;
+  const layer = pageEl.querySelector(".pdf-hl-layer");
+  if (!layer) return;
+  const w = pageEl.clientWidth;
+  const h = pageEl.clientHeight;
+  const boxes = [];
+  for (const hl of state.highlights) {
+    if (hl.page !== page) continue;
+    for (const rect of hl.rects || []) {
+      const box = document.createElement("div");
+      box.className = `pdf-hl hl-${hl.color || "yellow"}`;
+      if (hl.node_id) box.classList.add("has-node");
+      if (hl.id === state.activeHighlightId) box.classList.add("active");
+      box.style.left = `${rect.x * w}px`;
+      box.style.top = `${rect.y * h}px`;
+      box.style.width = `${rect.w * w}px`;
+      box.style.height = `${rect.h * h}px`;
+      box.dataset.highlightId = hl.id;
+      box.title = hl.node_id ? "点击:跳到问答节点 · 右键:菜单" : "右键:菜单";
+      boxes.push(box);
+    }
+  }
+  layer.replaceChildren(...boxes);
+}
+
+function highlightById(id) {
+  return state.highlights.find((h) => h.id === id) || null;
+}
+
+function onHighlightClick(event) {
+  const box = event.target.closest(".pdf-hl");
+  if (!box) return;
+  const hl = highlightById(box.dataset.highlightId);
+  if (!hl) return;
+  event.stopPropagation();
+  if (hl.node_id && state.nodeById.has(hl.node_id)) {
+    if (!state.paneOpen.tree) setPaneOpen("tree", true);
+    selectNode(hl.node_id);
+    focusSelected();
+  }
+}
+
+function onHighlightContextMenu(event) {
+  const box = event.target.closest(".pdf-hl");
+  if (!box) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const hl = highlightById(box.dataset.highlightId);
+  if (!hl) return;
+  state.activeHighlightId = hl.id;
+  const menu = els.highlightMenu;
+  menu.hidden = false;
+  syncSelColorButtons(menu);
+  if (els.hlGotoNodeBtn) els.hlGotoNodeBtn.hidden = !(hl.node_id && state.nodeById.has(hl.node_id));
+  const rect = menu.getBoundingClientRect();
+  let left = clamp(event.clientX, 8, window.innerWidth - rect.width - 8);
+  let top = clamp(event.clientY, 8, window.innerHeight - rect.height - 8);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
+function hideHighlightMenu() {
+  if (els.highlightMenu) els.highlightMenu.hidden = true;
+}
+
+async function recolorActiveHighlight(color) {
+  const hl = highlightById(state.activeHighlightId);
+  if (!hl) return;
+  try {
+    const res = await fetch(`/api/highlights/${hl.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ color }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "更新失败");
+    hl.color = color;
+    drawHighlightsForPage(hl.page);
+  } catch (err) {
+    window.alert(err.message);
+  }
+}
+
+async function deleteActiveHighlight() {
+  const hl = highlightById(state.activeHighlightId);
+  if (!hl) return;
+  try {
+    const res = await fetch(`/api/highlights/${hl.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "删除失败");
+    }
+    const page = hl.page;
+    state.highlights = state.highlights.filter((h) => h.id !== hl.id);
+    state.activeHighlightId = null;
+    drawHighlightsForPage(page);
+  } catch (err) {
+    window.alert(err.message);
+  }
+}
+
+// ── 面板显隐 / 宽度 ────────────────────────────────────────────────────
+
+function setPaneOpen(pane, open) {
+  state.paneOpen[pane] = open;
+  try {
+    localStorage.setItem("paneOpen", JSON.stringify(state.paneOpen));
+  } catch {}
+  renderPanes();
+  setTimeout(renderMiniMap, 180);
+}
+
+function renderPanes() {
+  const map = { pdf: els.pdfPane, tree: els.treePane, chat: els.sidePanel };
+  const toggles = { pdf: els.togglePdfBtn, tree: els.toggleTreeBtn, chat: els.toggleChatBtn };
+  for (const key of PANE_KEYS) {
+    const open = state.paneOpen[key];
+    if (map[key]) map[key].classList.toggle("collapsed", !open);
+    if (toggles[key]) toggles[key].classList.toggle("active", open);
+  }
+  // 两侧的拖拽手柄只在两边都展开时才有意义。
+  if (els.pdfResizeHandle) els.pdfResizeHandle.style.display = state.paneOpen.pdf && state.paneOpen.tree ? "" : "none";
+  if (els.sideResizeHandle) els.sideResizeHandle.style.display = state.paneOpen.chat && (state.paneOpen.tree || state.paneOpen.pdf) ? "" : "none";
+}
+
+function initPdfPaneWidth() {
+  const stored = Number(localStorage.getItem("pdfPaneWidth"));
+  if (stored && els.pdfPane) els.pdfPane.style.flexBasis = `${clamp(stored, 320, 1200)}px`;
+}
+
+let resizingPdf = false;
+function startPdfResize(event) {
+  resizingPdf = true;
+  event.preventDefault();
+}
+function movePdfResize(event) {
+  if (!resizingPdf || !els.pdfPane) return;
+  const left = els.pdfPane.getBoundingClientRect().left;
+  const width = clamp(event.clientX - left, 320, 1200);
+  els.pdfPane.style.flexBasis = `${width}px`;
+}
+function stopPdfResize() {
+  if (!resizingPdf) return;
+  resizingPdf = false;
+  if (els.pdfPane) {
+    const width = els.pdfPane.getBoundingClientRect().width;
+    localStorage.setItem("pdfPaneWidth", String(Math.round(width)));
+  }
+  renderMiniMap();
+}
+
+async function uploadPdf(file) {
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const res = await fetch("/api/documents", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "上传失败");
+    await fetchDocuments();
+    await selectDocument(data.document.id);
+  } catch (err) {
+    window.alert(err.message);
+  }
+}
+
+async function deleteCurrentDocument() {
+  const doc = currentDocument();
+  if (!doc) return;
+  if (!window.confirm(`删除《${doc.title || doc.original_name}》？\n其所有高亮与问答节点都会一并删除,不可恢复。`)) return;
+  try {
+    const res = await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "删除失败");
+    }
+    state.currentDocId = null;
+    await fetchDocuments();
+    await selectDocument(state.currentDocId);
+  } catch (err) {
+    window.alert(err.message);
+  }
+}
+
 function wireEvents() {
   els.composer.addEventListener("submit", sendPrompt);
   for (const button of els.sideTabBtns) {
@@ -2442,14 +2974,10 @@ function wireEvents() {
   els.sideResizeHandle.addEventListener("pointerdown", startSidePanelResize);
   window.addEventListener("pointermove", resizeSidePanel);
   window.addEventListener("pointerup", stopSidePanelResize);
-  els.workspaceToggleBtn.addEventListener("click", () => setWorkspaceDrawerOpen(!state.workspaceOpen));
-  els.workspaceCollapseBtn.addEventListener("click", () => setWorkspaceDrawerOpen(false));
-  els.workspaceRefreshBtn.addEventListener("click", () => fetchWorkspaceFiles().catch(console.error));
-  els.workspacePreviewBackdrop.addEventListener("click", closeWorkspacePreview);
-  els.workspacePreviewCloseBtn.addEventListener("click", closeWorkspacePreview);
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !els.workspacePreview.hidden) closeWorkspacePreview();
     if (event.key === "Escape") {
+      hideSelectionToolbar();
+      hideHighlightMenu();
       hideNoteContextMenu();
       hideNodeNotePreviewImmediate();
       hideNodePromptPreview();
@@ -2473,7 +3001,6 @@ function wireEvents() {
       els.composer.requestSubmit();
     }
   });
-  els.fileInput.addEventListener("change", uploadFiles);
   els.searchInput.addEventListener("input", () => {
     state.search = els.searchInput.value;
     renderTree();
@@ -2497,39 +3024,102 @@ function wireEvents() {
       renderBackendControls();
     });
   }
-  els.projectSelect.addEventListener("change", () => {
-    const value = els.projectSelect.value;
-    if (state.mode === "live" && value === "__new__") {
-      startNewProject();
-      return;
-    }
+  for (const button of els.webSearchBtns) {
+    button.addEventListener("click", () => {
+      const enabled = button.dataset.webSearch === "on";
+      if (enabled === state.enableWebSearch) return;
+      state.enableWebSearch = enabled;
+      localStorage.setItem("askWebSearch", enabled ? "on" : "off");
+      renderWebSearchControls();
+    });
+  }
+  // ── 文档选择 / 上传 / 删除 ──
+  els.documentSelect.addEventListener("change", () => {
+    const value = els.documentSelect.value;
     if (!value) return;
-    state.selectedProjectId = value;
-    state.nodes = nodesForProject(value);
-    state.selectedId = value;
-    state.parentId = value;
-    if (state.mode === "live") localStorage.setItem("selectedProjectId", value);
-    rebuildIndexes();
-    render();
-    focusSelected();
-    if (state.mode === "live") fetchWorkspaceFiles().catch(console.error);
+    selectDocument(value).catch(console.error);
   });
+  els.docUploadInput.addEventListener("change", () => {
+    const file = els.docUploadInput.files && els.docUploadInput.files[0];
+    els.docUploadInput.value = "";
+    if (file) uploadPdf(file).catch(console.error);
+  });
+  if (els.pdfEmptyUploadBtn) els.pdfEmptyUploadBtn.addEventListener("click", () => els.docUploadInput.click());
+  els.docDeleteBtn.addEventListener("click", () => deleteCurrentDocument().catch(console.error));
+
+  // ── PDF 缩放 / 选择 / 高亮 ──
+  els.pdfZoomInBtn.addEventListener("click", () => setPdfScale(state.pdfScale * 1.15));
+  els.pdfZoomOutBtn.addEventListener("click", () => setPdfScale(state.pdfScale / 1.15));
+  els.pdfPages.addEventListener("mouseup", handlePdfMouseUp);
+  els.pdfPages.addEventListener("click", onHighlightClick);
+  els.pdfPages.addEventListener("contextmenu", onHighlightContextMenu);
+  els.selHighlightBtn.addEventListener("click", () => highlightSelection().catch(console.error));
+  els.selAskBtn.addEventListener("click", askFromSelection);
+  els.selectionToolbar.querySelectorAll(".hl-color").forEach((btn) => {
+    btn.addEventListener("mousedown", (event) => {
+      event.preventDefault(); // 不要丢失当前选区
+      pdfSelColor = btn.dataset.color;
+      localStorage.setItem("hlColor", pdfSelColor);
+      if (state.pendingSelection) state.pendingSelection.color = pdfSelColor;
+      syncSelColorButtons(els.selectionToolbar);
+    });
+  });
+  els.highlightMenu.querySelectorAll(".hl-color").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      recolorActiveHighlight(btn.dataset.color).catch(console.error);
+      hideHighlightMenu();
+    });
+  });
+  if (els.hlGotoNodeBtn) {
+    els.hlGotoNodeBtn.addEventListener("click", () => {
+      const hl = highlightById(state.activeHighlightId);
+      hideHighlightMenu();
+      if (hl && hl.node_id && state.nodeById.has(hl.node_id)) {
+        if (!state.paneOpen.tree) setPaneOpen("tree", true);
+        selectNode(hl.node_id);
+        focusSelected();
+      }
+    });
+  }
+  els.hlDeleteBtn.addEventListener("click", () => {
+    deleteActiveHighlight().catch(console.error);
+    hideHighlightMenu();
+  });
+  document.addEventListener("click", (event) => {
+    if (!els.highlightMenu.hidden && !els.highlightMenu.contains(event.target) && !event.target.closest(".pdf-hl")) {
+      hideHighlightMenu();
+    }
+    if (!els.selectionToolbar.hidden && !els.selectionToolbar.contains(event.target)) {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) hideSelectionToolbar();
+    }
+  });
+
+  // ── 面板显隐 / PDF 宽度拖拽 ──
+  els.togglePdfBtn.addEventListener("click", () => setPaneOpen("pdf", !state.paneOpen.pdf));
+  els.toggleTreeBtn.addEventListener("click", () => setPaneOpen("tree", !state.paneOpen.tree));
+  els.toggleChatBtn.addEventListener("click", () => setPaneOpen("chat", !state.paneOpen.chat));
+  document.querySelectorAll(".pane-collapse").forEach((btn) => {
+    btn.addEventListener("click", () => setPaneOpen(btn.dataset.pane, false));
+  });
+  document.querySelectorAll(".pane-rail").forEach((rail) => {
+    rail.addEventListener("click", () => setPaneOpen(rail.dataset.pane, true));
+  });
+  els.pdfResizeHandle.addEventListener("pointerdown", (event) => {
+    startPdfResize(event);
+    els.pdfResizeHandle.setPointerCapture(event.pointerId);
+  });
+  window.addEventListener("pointermove", movePdfResize);
+  window.addEventListener("pointerup", stopPdfResize);
+
   els.emptyState.addEventListener("click", () => {
     els.promptInput.focus();
   });
   els.refreshBtn.addEventListener("click", () => {
-    if (state.mode === "claude_code") {
-      if (state.ccPath) fetchClaudeCodeTree(state.ccPath, { keepSelection: true }).catch(console.error);
-      else promptImportClaudeCodePath();
-      return;
-    }
-    fetchTree().catch(console.error);
-    fetchWorkspaceFiles().catch(console.error);
+    fetchDocuments()
+      .then(() => Promise.all([fetchTree(), fetchHighlights()]))
+      .catch(console.error);
   });
-
-  if (els.modeLiveBtn) els.modeLiveBtn.addEventListener("click", () => setMode("live").catch(console.error));
-  if (els.modeHistoryBtn) els.modeHistoryBtn.addEventListener("click", () => setMode("claude_code").catch(console.error));
-  if (els.ccImportBtn) els.ccImportBtn.addEventListener("click", promptImportClaudeCodePath);
 
   if (els.miniMap) {
     let dragging = false;
@@ -2626,14 +3216,20 @@ function wireEvents() {
 }
 
 initSidePanelWidth();
+initPdfPaneWidth();
 document.body.classList.add("mode-live");
 wireEvents();
-fetchTree({ keepSelection: false })
-  .then(() => {
+renderPanes();
+
+(async () => {
+  try {
+    await fetchDocuments();
+    renderDocumentSelect();
+    await selectDocument(state.currentDocId, { keepNode: true });
     if (state.nodes.length) focusSelected();
-    return fetchWorkspaceFiles();
-  })
-  .catch((err) => {
+  } catch (err) {
     window.alert(err.message);
-  });
+  }
+})();
+
 setInterval(pollIfNeeded, 2500);

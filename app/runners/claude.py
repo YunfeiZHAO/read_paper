@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, Dict, List, Optional
 
 from ..config import (
@@ -10,14 +11,25 @@ from ..config import (
     CLAUDE_API_TIMEOUT_SECONDS,
     CLAUDE_BASH_TIMEOUT_SECONDS,
     CLAUDE_MAX_TOOL_ITERATIONS,
+    BASE_DIR,
     WORK_DIR,
     anthropic,
 )
-from ..db import get_files, get_node, update_node
+from ..db import get_files, get_highlight, get_node, update_node
 from ..events import collect_tools_count, trim_events_for_storage
 from ..prompts import build_codex_prompt
 from ..utils import now_iso
 from ..workspace import record_workspace_changes, workspace_snapshot
+
+
+def _bash_env() -> dict:
+    venv_bin = BASE_DIR / ".venv" / "bin"
+    env = os.environ.copy()
+    if venv_bin.is_dir():
+        env["PATH"] = f"{venv_bin}{os.pathsep}{env.get('PATH', '')}"
+        env["VIRTUAL_ENV"] = str(BASE_DIR / ".venv")
+        env.pop("PYTHONHOME", None)
+    return env
 
 
 async def _run_claude_bash_tool(command: str, restart: bool) -> str:
@@ -27,6 +39,7 @@ async def _run_claude_bash_tool(command: str, restart: bool) -> str:
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(WORK_DIR),
+            env=_bash_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -51,34 +64,53 @@ def _claude_web_search_query(block: Any) -> str:
     return ""
 
 
+# Web search tool variants to try, newest first; some gateways (e.g. Vertex-backed
+# proxies) only recognize the older "basic" type.
+WEB_SEARCH_VARIANTS: List[Dict[str, Any]] = [
+    {"type": "web_search_20260209", "name": "web_search", "max_uses": 5},
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
+]
+
+
+def _claude_initial_tools(bash_tool: Dict[str, Any], enabled: bool) -> List[Dict[str, Any]]:
+    """开启联网搜索时附带首个 web_search 变体,否则只有 bash(无失败往返)。"""
+    if enabled:
+        return [bash_tool, WEB_SEARCH_VARIANTS[0]]
+    return [bash_tool]
+
+
 async def _run_claude_api_for_node_async(node_id: str) -> None:
     node = get_node(node_id)
     if not node:
         return
 
     files = get_files([item["id"] for item in node.get("attachments", [])])
-    prompt_text = build_codex_prompt(node.get("parent_id"), node["prompt"], files, node.get("workspace_refs") or [])
+    quote = ""
+    if node.get("source_highlight_id"):
+        hl = get_highlight(node["source_highlight_id"])
+        quote = (hl or {}).get("quote") or ""
+    prompt_text = build_codex_prompt(
+        node.get("parent_id"), node["prompt"], files, node.get("workspace_refs") or [], quote=quote
+    )
     before_workspace = workspace_snapshot()
 
     update_node(node_id, status="running", model=CLAUDE_API_MODEL)
+
+    web_search_enabled = bool(node.get("enable_web_search"))
 
     client = anthropic.Anthropic()
     system_prompt = (
         "你是 Codex 问答后端（本次由 Claude API 回答）。当前应用把对话组织成树状结构；"
         "本次请求会从某个节点继承其祖先上下文，并产生一个新的子节点。"
         f"你有一个 bash 工具，命令会在本地工作目录 {WORK_DIR} 下以完整权限执行（无沙箱），"
-        "可以用来读写文件、运行代码等；也可以使用 web_search 工具搜索网络信息。"
-        "请基于继承路径、用户当前问题和上传附件作答。"
+        "可以用来读写文件、运行代码等。"
+        + ("也可以使用 web_search 工具搜索网络信息。" if web_search_enabled else "")
+        + "请基于继承路径、用户当前问题和上传附件作答。"
     )
     bash_tool = {"type": "bash_20250124", "name": "bash"}
-    # Web search tool variants to try, newest first; some gateways (e.g. Vertex-backed
-    # proxies) only recognize the older "basic" type.
-    web_search_variants = [
-        {"type": "web_search_20260209", "name": "web_search", "max_uses": 5},
-        {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
-    ]
+    web_search_variants = WEB_SEARCH_VARIANTS
     web_search_tried: set[str] = set()
-    tools: List[Dict[str, Any]] = [bash_tool, web_search_variants[0]]
+    tools: List[Dict[str, Any]] = _claude_initial_tools(bash_tool, web_search_enabled)
 
     messages: List[Dict[str, Any]] = [{"role": "user", "content": prompt_text}]
     events: List[Dict[str, Any]] = []

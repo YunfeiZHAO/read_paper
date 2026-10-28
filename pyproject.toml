@@ -1,11 +1,13 @@
 [project]
-name = "codex-tree-qa"
+name = "tree-qa"
 version = "0.1.0"
-description = "把问答组织成树的 Flask Web 应用,后端可选 Codex CLI 或 Claude API。"
+description = "PDF 阅读 + 高亮提问的树状问答 FastAPI Web 应用,后端可选 Codex CLI 或 Claude API。"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "Flask>=3.0,<4",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
     "anthropic",
     "python-dotenv",
 ]
@@ -14,6 +16,27 @@ dependencies = [
 # 启用:uv sync --extra codex
 [project.optional-dependencies]
 codex = ["sub-pool-client"]
+
+# bash tool(Codex/Claude 跑命令读论文)可能用到的包,应用本身不 import。
+# 想让 bash tool 不用现装直接可用,就预装:uv sync --extra tools
+tools = [
+    "PyMuPDF",      # import fitz —— PDF 文本/图片提取
+    "pdfplumber",   # PDF 表格/文本提取
+    "pypdf",        # PDF 拆分/合并/页面操作
+    "Pillow",       # 图片处理(截图、转换、裁剪论文图表)
+    "requests",     # 下载论文
+    "beautifulsoup4",  # 解析 HTML
+    "lxml",         # BeautifulSoup/网页解析后端
+]
+
+[dependency-groups]
+# 开发/测试依赖:uv sync --group dev 安装,uv run pytest 运行。
+# httpx 是 FastAPI/Starlette TestClient 的依赖。
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.uv]
 # 这是应用而非库,不要把它自身当成包来构建安装,uv 只负责管理环境与依赖。

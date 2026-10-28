@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Codex Tree QA</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <title>PDF Tree QA</title>
+    <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -12,145 +12,190 @@
         <div class="brand">
           <span class="brand-mark">◇</span>
           <div class="brand-copy">
-            <strong>Codex Tree QA</strong>
+            <strong>PDF Tree QA</strong>
             <span id="workspaceLabel"></span>
           </div>
         </div>
-        <div class="mode-toggle" aria-label="数据来源">
-          <button id="modeLiveBtn" class="active" data-mode="live" type="button">实时</button>
-          <button id="modeHistoryBtn" data-mode="claude_code" type="button">历史</button>
-        </div>
         <label class="project-select">
-          <span id="projectSelectLabel">项目</span>
-          <select id="projectSelect"></select>
+          <span id="projectSelectLabel">论文</span>
+          <select id="documentSelect"></select>
         </label>
-        <button id="ccImportBtn" class="icon-button" type="button" title="导入 Claude Code 项目（直接读取本地 ~/.claude/projects）" hidden>📥</button>
+        <label class="doc-upload" title="上传 PDF" aria-label="上传 PDF">
+          <input id="docUploadInput" type="file" accept="application/pdf,.pdf" hidden />
+          <span aria-hidden="true">+ PDF</span>
+        </label>
+        <button id="docDeleteBtn" class="icon-button danger-button" type="button" title="删除当前 PDF（含其高亮与问答树）">⌫</button>
         <label class="search-box">
           <span>⌕</span>
           <input id="searchInput" type="search" placeholder="搜索节点" autocomplete="off" />
         </label>
         <div class="topbar-actions">
+          <div class="pane-visibility" aria-label="面板">
+            <button id="togglePdfBtn" class="pane-toggle active" type="button" title="PDF 面板">PDF</button>
+            <button id="toggleTreeBtn" class="pane-toggle active" type="button" title="问答树面板">树</button>
+            <button id="toggleChatBtn" class="pane-toggle active" type="button" title="对话面板">对话</button>
+          </div>
           <div class="direction-toggle" aria-label="树方向">
             <button class="active" data-direction="down" type="button">向下</button>
             <button data-direction="right" type="button">向右</button>
           </div>
-          <button id="focusBtn" class="icon-button" type="button" title="聚焦">⌖</button>
           <button id="refreshBtn" class="icon-button" type="button" title="刷新">↻</button>
         </div>
       </header>
 
-      <main class="main-layout">
-        <section class="canvas-column">
-          <aside id="workspaceDrawer" class="workspace-drawer collapsed">
-            <button id="workspaceToggleBtn" class="workspace-toggle" type="button" title="展开 Workspace" aria-label="展开 Workspace">W</button>
-            <div class="workspace-drawer-body">
-              <div class="panel-heading">
-                <h2>Workspace</h2>
-                <div class="panel-actions">
-                  <button id="workspaceCollapseBtn" class="icon-button" type="button" title="折叠 Workspace">‹</button>
-                  <button id="workspaceRefreshBtn" class="icon-button" type="button" title="刷新 Workspace">↻</button>
+      <main class="main-layout panes-layout">
+        <!-- ── PDF 面板 ───────────────────────────────────────────── -->
+        <section id="pdfPane" class="pane pdf-pane">
+          <div class="pane-rail" data-pane="pdf">
+            <button class="pane-rail-btn" type="button" title="展开 PDF">PDF</button>
+          </div>
+          <div class="pane-inner">
+            <div class="pane-heading">
+              <h2>PDF</h2>
+              <div class="panel-actions">
+                <span id="pdfPageInfo" class="pdf-page-info"></span>
+                <button id="pdfZoomOutBtn" class="icon-button" type="button" title="缩小">−</button>
+                <button id="pdfZoomInBtn" class="icon-button" type="button" title="放大">+</button>
+                <button class="icon-button pane-collapse" type="button" data-pane="pdf" title="折叠 PDF 面板">‹</button>
+              </div>
+            </div>
+            <div id="pdfViewport" class="pdf-viewport">
+              <div id="pdfPages" class="pdf-pages"></div>
+              <div id="pdfEmpty" class="pdf-empty">
+                <div class="pdf-empty-inner">
+                  <p>上传一篇 PDF 开始阅读</p>
+                  <button id="pdfEmptyUploadBtn" type="button">+ 上传 PDF</button>
                 </div>
               </div>
-              <div id="workspaceFileList" class="workspace-file-list"></div>
             </div>
-          </aside>
-
-          <div id="canvasHost" class="canvas-host">
-            <svg id="treeSvg" role="img" aria-label="Codex 问答树">
-              <defs>
-                <filter id="nodeShadow" x="-20%" y="-20%" width="140%" height="140%">
-                  <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#1f2937" flood-opacity="0.14" />
-                </filter>
-              </defs>
-              <g id="viewport">
-                <g id="edgeLayer"></g>
-                <g id="nodeLayer"></g>
-              </g>
-            </svg>
-            <div id="emptyState" class="empty-state">
-              <div class="ghost-root">say something</div>
-            </div>
-            <div class="zoom-controls">
-              <button id="zoomInBtn" class="icon-button" type="button" title="放大">+</button>
-              <button id="zoomOutBtn" class="icon-button" type="button" title="缩小">−</button>
-            </div>
-            <canvas id="miniMap" width="180" height="116"></canvas>
           </div>
         </section>
 
-        <div id="sideResizeHandle" class="side-resize-handle" role="separator" aria-orientation="vertical" title="拖拽调整对话栏宽度"></div>
+        <div id="pdfResizeHandle" class="pane-resize-handle" role="separator" aria-orientation="vertical" title="拖拽调整 PDF 面板宽度"></div>
 
-        <aside id="sidePanel" class="side-panel">
-          <section class="chat-header">
-            <div class="panel-heading">
-              <h2 id="detailTitle">对话</h2>
+        <!-- ── 问答树面板 ─────────────────────────────────────────── -->
+        <section id="treePane" class="pane canvas-column">
+          <div class="pane-rail" data-pane="tree">
+            <button class="pane-rail-btn" type="button" title="展开问答树">树</button>
+          </div>
+          <div class="pane-inner">
+            <div class="pane-heading tree-heading">
+              <h2>问答树</h2>
               <div class="panel-actions">
-                <button id="deleteBtn" class="icon-button danger-button" type="button" title="删除节点及后续节点">⌫</button>
-                <button id="exportBtn" class="icon-button" type="button" title="导出">⇩</button>
+                <button id="focusBtn" class="icon-button" type="button" title="聚焦">⌖</button>
+                <button class="icon-button pane-collapse" type="button" data-pane="tree" title="折叠问答树面板">›</button>
               </div>
             </div>
-            <div id="detailMeta" class="detail-meta"></div>
-            <div class="side-tabs" aria-label="侧栏">
-              <button class="active" data-side-tab="conversation" type="button">对话</button>
-              <button data-side-tab="notes" type="button">笔记</button>
+            <div id="canvasHost" class="canvas-host">
+              <svg id="treeSvg" role="img" aria-label="问答树">
+                <defs>
+                  <filter id="nodeShadow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#1f2937" flood-opacity="0.14" />
+                  </filter>
+                </defs>
+                <g id="viewport">
+                  <g id="edgeLayer"></g>
+                  <g id="nodeLayer"></g>
+                </g>
+              </svg>
+              <div id="emptyState" class="empty-state">
+                <div class="ghost-root">选中 PDF 文字,提问即生长</div>
+              </div>
+              <div class="zoom-controls">
+                <button id="zoomInBtn" class="icon-button" type="button" title="放大">+</button>
+                <button id="zoomOutBtn" class="icon-button" type="button" title="缩小">−</button>
+              </div>
+              <canvas id="miniMap" width="180" height="116"></canvas>
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section id="conversationPane" class="side-tab-panel conversation-pane">
-            <div id="conversationList" class="conversation-list"></div>
+        <div id="sideResizeHandle" class="side-resize-handle pane-resize-handle" role="separator" aria-orientation="vertical" title="拖拽调整对话栏宽度"></div>
 
-            <form id="composer" class="composer sidebar-composer">
-              <div class="composer-meta">
-                <div id="selectedFiles" class="selected-files"></div>
-                <div class="backend-toggle" aria-label="回答后端">
-                  <button class="active" data-backend="codex" type="button">Codex</button>
-                  <button data-backend="claude" type="button">Claude</button>
+        <!-- ── 对话面板 ───────────────────────────────────────────── -->
+        <aside id="sidePanel" class="pane side-panel">
+          <div class="pane-rail" data-pane="chat">
+            <button class="pane-rail-btn" type="button" title="展开对话">对话</button>
+          </div>
+          <div class="pane-inner">
+            <section class="chat-header">
+              <div class="panel-heading">
+                <h2 id="detailTitle">对话</h2>
+                <div class="panel-actions">
+                  <button id="deleteBtn" class="icon-button danger-button" type="button" title="删除节点及后续节点">⌫</button>
+                  <button id="exportBtn" class="icon-button" type="button" title="导出">⇩</button>
+                  <button class="icon-button pane-collapse" type="button" data-pane="chat" title="折叠对话面板">›</button>
                 </div>
               </div>
-              <div class="composer-row">
-                <label class="composer-upload" title="上传附件" aria-label="上传附件">
-                  <input id="fileInput" type="file" multiple />
-                  <span aria-hidden="true">+</span>
-                </label>
-                <textarea id="promptInput" rows="3" placeholder="输入问题"></textarea>
-                <button id="sendBtn" type="submit">发送</button>
+              <div id="detailMeta" class="detail-meta"></div>
+              <div class="side-tabs" aria-label="侧栏">
+                <button class="active" data-side-tab="conversation" type="button">对话</button>
+                <button data-side-tab="notes" type="button">笔记</button>
               </div>
-            </form>
-          </section>
+            </section>
 
-          <section id="notePane" class="side-tab-panel note-pane" hidden>
-            <div class="note-toolbar">
-              <span id="noteStatus" class="note-status">节点笔记</span>
-              <div class="panel-actions">
-                <button id="noteProjectBtn" class="icon-button" type="button" title="读取当前项目所有节点的笔记">☷</button>
-                <button id="noteEditBtn" class="icon-button" type="button" title="编辑笔记">笔</button>
-                <button id="noteSaveBtn" class="icon-button" type="button" title="保存笔记" hidden>✓</button>
+            <section id="conversationPane" class="side-tab-panel conversation-pane">
+              <div id="conversationList" class="conversation-list"></div>
+
+              <form id="composer" class="composer sidebar-composer">
+                <div class="composer-meta">
+                  <div id="selectedFiles" class="selected-files"></div>
+                  <div class="backend-toggle" aria-label="回答后端">
+                    <button class="active" data-backend="codex" type="button">Codex</button>
+                    <button data-backend="claude" type="button">Claude</button>
+                  </div>
+                  <div class="web-search-toggle" aria-label="联网搜索">
+                    <button data-web-search="off" type="button" title="不使用 web_search 工具">联网 关</button>
+                    <button data-web-search="on" type="button" title="使用 web_search 工具搜索网络">联网 开</button>
+                  </div>
+                </div>
+                <div class="composer-row">
+                  <textarea id="promptInput" rows="3" placeholder="输入问题(可先在 PDF 里选中原文)"></textarea>
+                  <button id="sendBtn" type="submit">发送</button>
+                </div>
+              </form>
+            </section>
+
+            <section id="notePane" class="side-tab-panel note-pane" hidden>
+              <div class="note-toolbar">
+                <span id="noteStatus" class="note-status">节点笔记</span>
+                <div class="panel-actions">
+                  <button id="noteProjectBtn" class="icon-button" type="button" title="读取当前 PDF 所有节点的笔记">☷</button>
+                  <button id="noteEditBtn" class="icon-button" type="button" title="编辑笔记">笔</button>
+                  <button id="noteSaveBtn" class="icon-button" type="button" title="保存笔记" hidden>✓</button>
+                </div>
               </div>
-            </div>
-            <div id="noteBox" class="note-box">
-              <textarea id="noteEditor" rows="8" placeholder="笔记" hidden></textarea>
-              <div id="noteRendered" class="note-rendered"></div>
-            </div>
-          </section>
+              <div id="noteBox" class="note-box">
+                <textarea id="noteEditor" rows="8" placeholder="笔记" hidden></textarea>
+                <div id="noteRendered" class="note-rendered"></div>
+              </div>
+            </section>
+          </div>
         </aside>
       </main>
 
-      <div id="workspacePreview" class="workspace-preview" hidden>
-        <button id="workspacePreviewBackdrop" class="workspace-preview-backdrop" type="button" aria-label="关闭预览"></button>
-        <section class="workspace-preview-panel" aria-label="Workspace 文件预览">
-          <header class="workspace-preview-header">
-            <div class="workspace-preview-title">
-              <h2 id="workspacePreviewTitle">Workspace</h2>
-              <span id="workspacePreviewMeta"></span>
-            </div>
-            <div class="panel-actions">
-              <a id="workspaceOpenBtn" class="icon-button" href="#" target="_blank" rel="noopener noreferrer" title="新窗口打开">↗</a>
-              <a id="workspaceDownloadBtn" class="icon-button" href="#" title="下载">⇩</a>
-              <button id="workspacePreviewCloseBtn" class="icon-button" type="button" title="关闭">×</button>
-            </div>
-          </header>
-          <div id="workspacePreviewBody" class="workspace-preview-body"></div>
-        </section>
+      <!-- 选中文字后的浮动工具条 -->
+      <div id="selectionToolbar" class="selection-toolbar" hidden>
+        <button id="selHighlightBtn" type="button" title="高亮并保存">高亮</button>
+        <button id="selAskBtn" type="button" title="就这段原文提问">提问</button>
+        <span class="selection-colors">
+          <button type="button" class="hl-color" data-color="yellow" style="--c:#ffe169" title="黄"></button>
+          <button type="button" class="hl-color" data-color="green" style="--c:#aee6a0" title="绿"></button>
+          <button type="button" class="hl-color" data-color="blue" style="--c:#a9d4ff" title="蓝"></button>
+          <button type="button" class="hl-color" data-color="pink" style="--c:#ffb3c7" title="粉"></button>
+        </span>
+      </div>
+
+      <!-- 已存在高亮的右键菜单 -->
+      <div id="highlightMenu" class="highlight-menu" hidden>
+        <div class="hl-menu-colors">
+          <button type="button" class="hl-color" data-color="yellow" style="--c:#ffe169"></button>
+          <button type="button" class="hl-color" data-color="green" style="--c:#aee6a0"></button>
+          <button type="button" class="hl-color" data-color="blue" style="--c:#a9d4ff"></button>
+          <button type="button" class="hl-color" data-color="pink" style="--c:#ffb3c7"></button>
+        </div>
+        <button id="hlGotoNodeBtn" type="button" class="hl-menu-item">跳到问答节点</button>
+        <button id="hlDeleteBtn" type="button" class="hl-menu-item danger">删除高亮</button>
       </div>
 
       <div id="noteContextMenu" class="note-context-menu" hidden>
@@ -161,6 +206,7 @@
 
     </div>
 
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="/static/vendor/pdfjs/pdf.min.js"></script>
+    <script src="/static/app.js"></script>
   </body>
 </html>

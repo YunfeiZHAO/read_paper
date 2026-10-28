@@ -2,15 +2,28 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from werkzeug.utils import secure_filename
-
 from .config import TEXT_EXCERPT_BYTES, UPLOAD_DIR
 from .db import DB_LOCK, db_connection, get_file
 from .utils import now_iso
+
+
+def secure_filename(name: str) -> str:
+    """把用户文件名收敛成安全的单段文件名(替代 werkzeug.secure_filename)。
+
+    去掉路径分隔符与控制字符,折叠空白为下划线,只保留基本名;空结果回退为空串
+    (调用方再回退到 "upload")。
+    """
+    name = (name or "").replace("\\", "/").split("/")[-1]
+    name = name.strip().replace("\x00", "")
+    # 允许字母数字、点、下划线、连字符;其余(含空白)折叠为下划线。
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    name = name.strip("._")
+    return name
 
 
 def is_text_like(filename: str, mime: Optional[str]) -> bool:
@@ -38,16 +51,21 @@ def is_text_like(filename: str, mime: Optional[str]) -> bool:
     }
 
 
-def store_upload(file_storage: Any) -> Dict[str, Any]:
-    original_name = file_storage.filename or "upload"
+def store_upload(original_name: str, data: bytes, content_type: Optional[str] = None) -> Dict[str, Any]:
+    """落盘一个上传文件,写入 files 表并返回其公开表示。
+
+    ``original_name`` 用户原始文件名,``data`` 文件字节,``content_type`` 可选 MIME。
+    与具体 Web 框架解耦(FastAPI UploadFile / 任意来源皆可)。
+    """
+    original_name = original_name or "upload"
     safe_name = secure_filename(original_name) or "upload"
     file_id = uuid.uuid4().hex
     target_dir = UPLOAD_DIR / file_id
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / safe_name
-    file_storage.save(target_path)
+    target_path.write_bytes(data)
 
-    mime = mimetypes.guess_type(original_name)[0] or file_storage.mimetype
+    mime = mimetypes.guess_type(original_name)[0] or content_type
     size = target_path.stat().st_size
     text_excerpt = ""
     if is_text_like(original_name, mime):

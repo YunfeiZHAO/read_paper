@@ -1,14 +1,17 @@
-"""所有 HTTP 路由,挂在一个 blueprint 上,由 create_app() 注册。"""
+"""所有 HTTP 路由,挂在一个 FastAPI APIRouter 上,由 create_app() 注册。"""
 from __future__ import annotations
 
 import mimetypes
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, Response, jsonify, render_template, request, send_file
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .config import (
     BACKENDS,
+    BASE_DIR,
     CLAUDE_PROJECTS_DIR,
+    ENABLE_WEB_SEARCH,
     WORKSPACE_TEXT_PREVIEW_BYTES,
     WORK_DIR,
 )
@@ -16,12 +19,24 @@ from .claude_history import claude_code_slug, read_claude_code_nodes, resume_fro
 from .db import (
     DB_LOCK,
     append_node_note,
+    create_document,
+    create_highlight,
     create_node,
     db_connection,
+    delete_document,
+    delete_highlight,
+    get_document,
     get_file,
+    get_highlight,
     get_node,
+    link_highlight_to_node,
+    list_documents,
+    list_highlights,
+    nodes_for_document,
     nodes_for_project,
     public_node,
+    touch_document,
+    update_highlight,
     update_node,
 )
 from .export import export_subtree_markdown
@@ -36,196 +51,326 @@ from .workspace import (
     workspace_kind,
 )
 
-bp = Blueprint("main", __name__)
+router = APIRouter()
+
+INDEX_HTML = BASE_DIR / "templates" / "index.html"
 
 
-@bp.get("/")
-def index() -> str:
-    return render_template("index.html")
+@router.get("/", response_class=HTMLResponse)
+def index() -> HTMLResponse:
+    return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
 
 
-@bp.get("/favicon.ico")
+@router.get("/favicon.ico")
 def favicon() -> Response:
-    return Response(status=204)
+    return Response(status_code=204)
 
 
-@bp.get("/api/health")
-def health() -> Response:
-    return jsonify({"ok": True, "time": now_iso(), "auth_selection": "fixed_backend_auth"})
+@router.get("/api/health")
+def health() -> Dict[str, Any]:
+    return {"ok": True, "time": now_iso(), "auth_selection": "fixed_backend_auth"}
 
 
-@bp.get("/api/tree")
-def api_tree() -> Response:
+@router.get("/api/tree")
+def api_tree() -> Dict[str, Any]:
     with DB_LOCK, db_connection() as conn:
         node_rows = conn.execute("SELECT * FROM nodes ORDER BY created_at").fetchall()
         file_rows = conn.execute("SELECT * FROM files ORDER BY created_at DESC").fetchall()
-    return jsonify(
-        {
-            "nodes": [public_node(row) for row in node_rows],
-            "files": rows_to_dicts(file_rows),
-            "work_dir": str(WORK_DIR),
-        }
-    )
+    return {
+        "nodes": [public_node(row) for row in node_rows],
+        "files": rows_to_dicts(file_rows),
+        "work_dir": str(WORK_DIR),
+    }
 
 
-@bp.get("/api/accounts")
-def api_accounts() -> Response:
-    return jsonify({"managed_by_backend": True, "selection": "fixed"})
+@router.get("/api/accounts")
+def api_accounts() -> Dict[str, Any]:
+    return {"managed_by_backend": True, "selection": "fixed"}
 
 
-@bp.post("/api/claude-code/resume-from-node")
-def api_claude_code_resume_from_node() -> Response:
-    payload = request.get_json(silent=True) or {}
+@router.post("/api/claude-code/resume-from-node")
+async def api_claude_code_resume_from_node(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
     project_path = str(payload.get("path") or "").strip()
     target_uuid = str(payload.get("message_uuid") or "").strip()
     result, status = resume_from_node(project_path, target_uuid)
-    return jsonify(result), status
+    return JSONResponse(result, status_code=status)
 
 
-@bp.get("/api/claude-code/tree")
-def api_claude_code_tree() -> Response:
-    project_path = (request.args.get("path") or "").strip()
+@router.get("/api/claude-code/tree")
+def api_claude_code_tree(path: str = "") -> JSONResponse:
+    project_path = (path or "").strip()
     if not project_path:
-        return jsonify({"error": "path 不能为空"}), 400
+        raise HTTPException(status_code=400, detail="path 不能为空")
     slug = claude_code_slug(project_path)
     cc_dir = CLAUDE_PROJECTS_DIR / slug
     if not cc_dir.exists() or not cc_dir.is_dir():
-        return jsonify({
-            "error": f"未找到 Claude Code 记录目录：{cc_dir}",
-            "slug": slug,
-        }), 404
+        return JSONResponse(
+            {"error": f"未找到 Claude Code 记录目录：{cc_dir}", "slug": slug}, status_code=404
+        )
     try:
         nodes = read_claude_code_nodes(cc_dir)
     except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": f"读取失败：{exc}"}), 500
-    return jsonify({
-        "nodes": nodes,
-        "source_path": project_path,
-        "claude_dir": str(cc_dir),
-    })
+        return JSONResponse({"error": f"读取失败：{exc}"}, status_code=500)
+    return JSONResponse(
+        {"nodes": nodes, "source_path": project_path, "claude_dir": str(cc_dir)}
+    )
 
 
-@bp.post("/api/ask")
-def api_ask() -> Response:
-    payload = request.get_json(silent=True) or {}
+@router.post("/api/ask")
+async def api_ask(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
-        return jsonify({"error": "prompt 不能为空"}), 400
+        raise HTTPException(status_code=400, detail="prompt 不能为空")
     parent_id = payload.get("parent_id") or None
     file_ids = payload.get("file_ids") or []
     if not isinstance(file_ids, list):
-        return jsonify({"error": "file_ids 必须是数组"}), 400
+        raise HTTPException(status_code=400, detail="file_ids 必须是数组")
     workspace_refs_payload = payload.get("workspace_refs") or []
     if not isinstance(workspace_refs_payload, list):
-        return jsonify({"error": "workspace_refs 必须是数组"}), 400
+        raise HTTPException(status_code=400, detail="workspace_refs 必须是数组")
     workspace_refs = normalize_workspace_refs(workspace_refs_payload)
     backend = str(payload.get("backend") or "codex").strip() or "codex"
     if backend not in BACKENDS:
-        return jsonify({"error": f"backend 必须是 {sorted(BACKENDS)} 之一"}), 400
+        raise HTTPException(status_code=400, detail=f"backend 必须是 {sorted(BACKENDS)} 之一")
+    enable_web_search = payload.get("enable_web_search")
+    enable_web_search = ENABLE_WEB_SEARCH if enable_web_search is None else bool(enable_web_search)
+
+    document_id = payload.get("document_id") or None
+    source_highlight_id = payload.get("source_highlight_id") or None
+    # 从父节点继承 document_id(fork 出来的子节点仍属于同一篇 PDF)。
+    if not document_id and parent_id:
+        parent = get_node(parent_id)
+        if parent:
+            document_id = parent.get("document_id")
+
     try:
-        node = create_node(parent_id, prompt, file_ids, workspace_refs, backend=backend)
+        node = create_node(
+            parent_id,
+            prompt,
+            file_ids,
+            workspace_refs,
+            backend=backend,
+            enable_web_search=enable_web_search,
+            document_id=document_id,
+            source_highlight_id=source_highlight_id,
+        )
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if source_highlight_id:
+        link_highlight_to_node(source_highlight_id, node["id"])
     start_worker(node["id"])
-    return jsonify({"node": node}), 202
+    return JSONResponse({"node": node}, status_code=202)
 
 
-@bp.post("/api/upload")
-def api_upload() -> Response:
-    uploaded = request.files.getlist("files")
+@router.post("/api/upload")
+async def api_upload(files: Optional[List[UploadFile]] = File(None), file: Optional[List[UploadFile]] = File(None)) -> JSONResponse:
+    uploaded = files or file or []
     if not uploaded:
-        uploaded = request.files.getlist("file")
-    if not uploaded:
-        return jsonify({"error": "没有收到文件"}), 400
-    saved_files = [store_upload(item) for item in uploaded if item.filename]
-    return jsonify({"files": saved_files}), 201
+        raise HTTPException(status_code=400, detail="没有收到文件")
+    saved_files = []
+    for item in uploaded:
+        if not item.filename:
+            continue
+        data = await item.read()
+        saved_files.append(store_upload(item.filename, data, item.content_type))
+    return JSONResponse({"files": saved_files}, status_code=201)
 
 
-@bp.get("/api/files/<file_id>/download")
+@router.get("/api/files/{file_id}/download")
 def api_download_file(file_id: str) -> Any:
     item = get_file(file_id)
     if not item:
-        return jsonify({"error": "文件不存在"}), 404
-    return send_file(item["path"], as_attachment=True, download_name=item["original_name"])
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return FileResponse(item["path"], filename=item["original_name"])
 
 
-@bp.get("/api/workspace/files")
-def api_workspace_files() -> Response:
-    node_id = str(request.args.get("node_id") or "").strip() or None
-    return jsonify({"root": str(WORK_DIR), "files": workspace_files_for_node(node_id)})
+# ── documents / highlights ──────────────────────────────────────────────
 
 
-@bp.get("/api/workspace/content")
-def api_workspace_content() -> Response:
+@router.post("/api/documents")
+async def api_create_document(file: UploadFile = File(...), title: str = "", num_pages: Optional[int] = None) -> JSONResponse:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="没有收到文件")
+    data = await file.read()
+    saved = store_upload(file.filename, data, file.content_type)
+    doc = create_document(saved["id"], title or saved["original_name"], saved["original_name"], num_pages)
+    return JSONResponse({"document": doc}, status_code=201)
+
+
+@router.get("/api/documents")
+def api_list_documents() -> Dict[str, Any]:
+    return {"documents": list_documents()}
+
+
+@router.get("/api/documents/{document_id}")
+def api_get_document(document_id: str) -> Dict[str, Any]:
+    doc = get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    touch_document(document_id)
+    return {
+        "document": doc,
+        "highlights": list_highlights(document_id),
+        "nodes": nodes_for_document(document_id),
+    }
+
+
+@router.delete("/api/documents/{document_id}")
+def api_delete_document(document_id: str) -> Dict[str, Any]:
+    if not get_document(document_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    result = delete_document(document_id)
+    return {"deleted": True, **result}
+
+
+@router.get("/api/documents/{document_id}/file")
+def api_document_file(document_id: str) -> Any:
+    doc = get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    item = get_file(doc["file_id"])
+    if not item:
+        raise HTTPException(status_code=404, detail="PDF 文件丢失")
+    return FileResponse(
+        item["path"],
+        media_type=item.get("mime") or "application/pdf",
+        filename=item["original_name"],
+    )
+
+
+@router.get("/api/documents/{document_id}/highlights")
+def api_list_highlights(document_id: str) -> Dict[str, Any]:
+    if not get_document(document_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"highlights": list_highlights(document_id)}
+
+
+@router.post("/api/documents/{document_id}/highlights")
+async def api_create_highlight(document_id: str, request: Request) -> JSONResponse:
+    if not get_document(document_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    payload = await _json_body(request)
+    rects = payload.get("rects") or []
+    if not isinstance(rects, list):
+        raise HTTPException(status_code=400, detail="rects 必须是数组")
     try:
-        path = resolve_workspace_file(str(request.args.get("path") or ""))
-    except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 404
+        hl = create_highlight(
+            document_id,
+            int(payload.get("page") or 0),
+            rects,
+            str(payload.get("quote") or ""),
+            str(payload.get("color") or "yellow"),
+        )
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({"highlight": hl}, status_code=201)
 
-    kind = workspace_kind(path)
+
+@router.patch("/api/highlights/{highlight_id}")
+async def api_patch_highlight(highlight_id: str, request: Request) -> Dict[str, Any]:
+    if not get_highlight(highlight_id):
+        raise HTTPException(status_code=404, detail="高亮不存在")
+    payload = await _json_body(request)
+    fields: Dict[str, Any] = {}
+    if "color" in payload:
+        fields["color"] = str(payload["color"] or "yellow")
+    if "quote" in payload:
+        fields["quote"] = str(payload["quote"] or "")
+    hl = update_highlight(highlight_id, **fields)
+    return {"highlight": hl}
+
+
+@router.delete("/api/highlights/{highlight_id}")
+def api_delete_highlight(highlight_id: str) -> Dict[str, Any]:
+    if not delete_highlight(highlight_id):
+        raise HTTPException(status_code=404, detail="高亮不存在")
+    return {"deleted": True}
+
+
+# ── workspace (保留服务端能力;前端 PDF 模式已不主动调用) ──────────────────
+
+
+@router.get("/api/workspace/files")
+def api_workspace_files(node_id: str = "") -> Dict[str, Any]:
+    node_id = (node_id or "").strip() or None
+    return {"root": str(WORK_DIR), "files": workspace_files_for_node(node_id)}
+
+
+@router.get("/api/workspace/content")
+def api_workspace_content(path: str = "") -> Dict[str, Any]:
+    try:
+        resolved = resolve_workspace_file(str(path or ""))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    kind = workspace_kind(resolved)
     if kind not in {"markdown", "text"}:
-        return jsonify({"error": "该文件类型不支持文本预览"}), 415
+        raise HTTPException(status_code=415, detail="该文件类型不支持文本预览")
 
-    with path.open("rb") as file_obj:
+    with resolved.open("rb") as file_obj:
         data = file_obj.read(WORKSPACE_TEXT_PREVIEW_BYTES + 1)
     truncated = len(data) > WORKSPACE_TEXT_PREVIEW_BYTES
     if truncated:
         data = data[:WORKSPACE_TEXT_PREVIEW_BYTES]
     text = data.decode("utf-8", errors="replace")
-    return jsonify({"file": public_workspace_file(path), "content": text, "truncated": truncated})
+    return {"file": public_workspace_file(resolved), "content": text, "truncated": truncated}
 
 
-@bp.get("/api/workspace/file")
-def api_workspace_file() -> Any:
+@router.get("/api/workspace/file")
+def api_workspace_file(path: str = "", download: str = "") -> Any:
     try:
-        path = resolve_workspace_file(str(request.args.get("path") or ""))
+        resolved = resolve_workspace_file(str(path or ""))
     except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 404
+        raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        raise HTTPException(status_code=400, detail=str(exc))
 
-    download = str(request.args.get("download") or "") == "1"
-    return send_file(
-        path,
-        as_attachment=download,
-        download_name=path.name,
-        mimetype=mimetypes.guess_type(path.name)[0] or None,
-        conditional=True,
+    is_download = str(download or "") == "1"
+    return FileResponse(
+        resolved,
+        media_type=mimetypes.guess_type(resolved.name)[0] or None,
+        filename=resolved.name if is_download else None,
     )
 
 
-@bp.patch("/api/nodes/<node_id>/note")
-def api_patch_node_note(node_id: str) -> Response:
+# ── notes / nodes ─────────────────────────────────────────────────────────
+
+
+@router.patch("/api/nodes/{node_id}/note")
+async def api_patch_node_note(node_id: str, request: Request) -> Dict[str, Any]:
     if not get_node(node_id):
-        return jsonify({"error": "节点不存在"}), 404
-    payload = request.get_json(silent=True) or {}
+        raise HTTPException(status_code=404, detail="节点不存在")
+    payload = await _json_body(request)
     note_md = payload.get("note_md", "")
     if not isinstance(note_md, str):
         note_md = str(note_md)
     update_node(node_id, note_md=note_md)
-    return jsonify({"node": get_node(node_id)})
+    return {"node": get_node(node_id)}
 
 
-@bp.post("/api/nodes/<node_id>/note/append")
-def api_append_node_note(node_id: str) -> Response:
-    payload = request.get_json(silent=True) or {}
+@router.post("/api/nodes/{node_id}/note/append")
+async def api_append_node_note(node_id: str, request: Request) -> Dict[str, Any]:
+    payload = await _json_body(request)
     text = payload.get("text", "")
     if not isinstance(text, str):
         text = str(text)
     try:
         node = append_node_note(node_id, text)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    return jsonify({"node": node})
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"node": node}
 
 
-@bp.get("/api/projects/<project_id>/notes")
-def api_project_notes(project_id: str) -> Response:
+@router.get("/api/projects/{project_id}/notes")
+def api_project_notes(project_id: str) -> Dict[str, Any]:
     project = get_node(project_id)
     if not project:
-        return jsonify({"error": "项目不存在"}), 404
+        raise HTTPException(status_code=404, detail="项目不存在")
     notes = [
         {
             "id": node["id"],
@@ -237,14 +382,14 @@ def api_project_notes(project_id: str) -> Response:
         for node in nodes_for_project(project_id)
         if str(node.get("note_md") or "").strip()
     ]
-    return jsonify({"project": {"id": project["id"], "title": project.get("title") or "项目"}, "notes": notes})
+    return {"project": {"id": project["id"], "title": project.get("title") or "项目"}, "notes": notes}
 
 
-@bp.patch("/api/nodes/<node_id>")
-def api_patch_node(node_id: str) -> Response:
+@router.patch("/api/nodes/{node_id}")
+async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
     if not get_node(node_id):
-        return jsonify({"error": "节点不存在"}), 404
-    payload = request.get_json(silent=True) or {}
+        raise HTTPException(status_code=404, detail="节点不存在")
+    payload = await _json_body(request)
     updates: Dict[str, Any] = {}
     if "title" in payload:
         title = compact_title(str(payload["title"]), 80)
@@ -255,14 +400,14 @@ def api_patch_node(node_id: str) -> Response:
     if "bookmarked" in payload:
         updates["bookmarked"] = 1 if bool(payload["bookmarked"]) else 0
     update_node(node_id, **updates)
-    return jsonify({"node": get_node(node_id)})
+    return {"node": get_node(node_id)}
 
 
-@bp.delete("/api/nodes/<node_id>")
-def api_delete_node(node_id: str) -> Response:
+@router.delete("/api/nodes/{node_id}")
+def api_delete_node(node_id: str) -> Dict[str, Any]:
     node = get_node(node_id)
     if not node:
-        return jsonify({"error": "节点不存在"}), 404
+        raise HTTPException(status_code=404, detail="节点不存在")
     with DB_LOCK, db_connection() as conn:
         count_row = conn.execute(
             """
@@ -298,18 +443,27 @@ def api_delete_node(node_id: str) -> Response:
             """,
             (node_id,),
         )
-    return jsonify({"deleted": deleted_count, "parent_id": node.get("parent_id")})
+    return {"deleted": deleted_count, "parent_id": node.get("parent_id")}
 
 
-@bp.get("/api/export/<node_id>")
-def api_export(node_id: str) -> Any:
+@router.get("/api/export/{node_id}")
+def api_export(node_id: str) -> Response:
     try:
         markdown = export_subtree_markdown(node_id)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 404
+        raise HTTPException(status_code=404, detail=str(exc))
     filename = f"codex-tree-{node_id[:8]}.md"
     return Response(
-        markdown,
-        mimetype="text/markdown; charset=utf-8",
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+async def _json_body(request: Request) -> Dict[str, Any]:
+    """宽容地解析 JSON 请求体,出错时回退为空 dict(对齐旧的 get_json(silent=True))。"""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
