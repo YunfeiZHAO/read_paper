@@ -906,6 +906,14 @@ pre {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-tab-panel[hidden] {
+  display: none !important;
+  flex: 0 !important;
+  min-height: 0 !important;
 }
 
 .conversation-pane {
@@ -1256,7 +1264,7 @@ button.meta-pill {
 
 .note-pane {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   padding: 12px;
   background: #fbfaf7;
@@ -1396,6 +1404,12 @@ button.meta-pill {
   display: grid;
   gap: 8px;
   padding: 2px 10px 10px;
+}
+
+/* The explicit display:grid above would otherwise override the UA's default of
+   hiding a closed <details>'s content, leaving the collapsed list taking space. */
+.doc-notes:not([open]) > .doc-notes-body {
+  display: none;
 }
 
 .doc-note-item {
@@ -2178,6 +2192,12 @@ button.meta-pill {
    pane grow to absorb the free space so it always reaches the right edge. */
 #treePane.collapsed ~ .side-panel.pane:not(.collapsed) {
   flex: 1 1 var(--side-panel-width, 420px);
+}
+
+/* When both neighbouring panes are collapsed to rails, let the PDF pane grow
+   to fill the whole row instead of staying at its fixed width. */
+.pdf-pane.pane:not(.collapsed):has(~ #treePane.collapsed):has(~ .side-panel.collapsed) {
+  flex: 1 1 auto !important;
 }
 
 /* Collapsed → thin rail */

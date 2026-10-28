@@ -136,6 +136,7 @@ const els = {
   noteProjectBtn: document.getElementById("noteProjectBtn"),
   noteEditBtn: document.getElementById("noteEditBtn"),
   noteSaveBtn: document.getElementById("noteSaveBtn"),
+  docNotesHost: document.getElementById("docNotesHost"),
   noteBox: document.getElementById("noteBox"),
   noteEditor: document.getElementById("noteEditor"),
   noteRendered: document.getElementById("noteRendered"),
@@ -1989,10 +1990,15 @@ function renderNotePanel() {
   els.noteEditor.hidden = !state.noteEditing;
   els.noteRendered.hidden = state.noteEditing;
 
+  // The "All notes" list sits above the toolbar, in its own host, so it stays
+  // put while the note body below scrolls.
+  const docNotes = renderDocNotesBlock();
+  els.docNotesHost.replaceChildren();
+  els.docNotesHost.hidden = !docNotes;
+  if (docNotes) els.docNotesHost.appendChild(docNotes);
+
   const rendered = document.createElement("div");
   rendered.className = "note-preview-section";
-  const docNotes = renderDocNotesBlock();
-  if (docNotes) rendered.appendChild(docNotes);
   if (isHighlight) {
     const quote = document.createElement("blockquote");
     quote.className = "note-highlight-quote";
