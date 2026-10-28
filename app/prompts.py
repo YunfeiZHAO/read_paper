@@ -1,5 +1,5 @@
 """Stitch the ancestor chain + attachments + workspace refs into one self-contained
-prompt for Codex/Claude.
+prompt for the LLM backend (provider-agnostic).
 
 This is what makes the "tree" work without a stateful chat history: every request walks
 from the node up to the root and inlines each ancestor's question, answer, and references,
@@ -64,7 +64,7 @@ def inherited_attachment_files(nodes: List[Dict[str, Any]]) -> List[Dict[str, An
     return get_files(file_ids)
 
 
-def build_codex_prompt(
+def build_prompt(
     parent_id: Optional[str],
     prompt: str,
     files: List[Dict[str, Any]],

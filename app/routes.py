@@ -503,7 +503,7 @@ def api_export(node_id: str) -> Response:
         markdown = export_subtree_markdown(node_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    filename = f"codex-tree-{node_id[:8]}.md"
+    filename = f"qa-tree-{node_id[:8]}.md"
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",

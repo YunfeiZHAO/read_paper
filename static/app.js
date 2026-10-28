@@ -107,6 +107,7 @@ const els = {
   promptInput: document.getElementById("promptInput"),
   sendBtn: document.getElementById("sendBtn"),
   selectedFiles: document.getElementById("selectedFiles"),
+  threadTarget: document.getElementById("threadTarget"),
   detailTitle: document.getElementById("detailTitle"),
   detailMeta: document.getElementById("detailMeta"),
   sideTabBtns: document.querySelectorAll("[data-side-tab]"),
@@ -1867,7 +1868,49 @@ function renderConversation() {
   }
 }
 
+// Show whether the next question starts a new tree (root) or continues an
+// existing node, and offer a one-click break-out to a fresh thread.
+function renderThreadTarget() {
+  if (!els.threadTarget) return;
+  els.threadTarget.replaceChildren();
+  const parent = state.parentId ? state.nodeById.get(state.parentId) : null;
+
+  if (!parent) {
+    const label = document.createElement("span");
+    label.className = "thread-chip thread-chip-root";
+    label.textContent = "🌱 New thread";
+    label.title = "Your next question will start a separate tree for this PDF";
+    els.threadTarget.appendChild(label);
+    return;
+  }
+
+  const chip = document.createElement("span");
+  chip.className = "thread-chip thread-chip-continue";
+  const arrow = document.createElement("span");
+  arrow.className = "thread-chip-arrow";
+  arrow.textContent = "↳";
+  const text = document.createElement("span");
+  text.className = "thread-chip-text";
+  text.textContent = compact(parent.title || parent.prompt || "question", 48);
+  text.title = parent.prompt || parent.title || "";
+  chip.append(arrow, document.createTextNode(" Continuing: "), text);
+
+  const newThread = document.createElement("button");
+  newThread.type = "button";
+  newThread.className = "thread-new-btn";
+  newThread.textContent = "+ New thread";
+  newThread.title = "Ask an unrelated question as a separate tree instead";
+  newThread.addEventListener("click", () => {
+    state.parentId = null;
+    renderComposer();
+    els.promptInput.focus();
+  });
+
+  els.threadTarget.append(chip, newThread);
+}
+
 function renderComposer() {
+  renderThreadTarget();
   els.selectedFiles.replaceChildren();
   const sel = state.pendingSelection;
   if (sel && sel.quote) {

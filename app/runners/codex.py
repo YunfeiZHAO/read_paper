@@ -27,7 +27,7 @@ from ..events import (
     parse_jsonl_line,
     trim_events_for_storage,
 )
-from ..prompts import build_codex_prompt
+from ..prompts import build_prompt
 from ..utils import now_iso
 from ..workspace import record_workspace_changes, workspace_snapshot
 
@@ -56,7 +56,7 @@ async def _run_codex_for_node_async(node_id: str) -> None:
     if node.get("source_highlight_id"):
         hl = get_highlight(node["source_highlight_id"])
         quote = (hl or {}).get("quote") or ""
-    prompt_text = build_codex_prompt(
+    prompt_text = build_prompt(
         node.get("parent_id"), node["prompt"], files, node.get("workspace_refs") or [], quote=quote
     )
     run_path = RUN_DIR / node_id

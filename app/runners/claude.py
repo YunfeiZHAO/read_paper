@@ -17,7 +17,7 @@ from ..config import (
 )
 from ..db import get_files, get_highlight, get_node, update_node
 from ..events import collect_tools_count, trim_events_for_storage
-from ..prompts import build_codex_prompt
+from ..prompts import build_prompt
 from ..utils import now_iso
 from ..workspace import record_workspace_changes, workspace_snapshot
 
@@ -89,7 +89,7 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
     if node.get("source_highlight_id"):
         hl = get_highlight(node["source_highlight_id"])
         quote = (hl or {}).get("quote") or ""
-    prompt_text = build_codex_prompt(
+    prompt_text = build_prompt(
         node.get("parent_id"), node["prompt"], files, node.get("workspace_refs") or [], quote=quote
     )
     before_workspace = workspace_snapshot()
