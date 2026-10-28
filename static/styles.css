@@ -1170,6 +1170,25 @@ button.meta-pill {
   background: rgba(32, 33, 36, 0.13);
 }
 
+/* KaTeX display math: let long equations scroll instead of overflowing the pane. */
+.markdown-body .katex-display {
+  margin: 10px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* The source quote shown above a highlight's note in the side panel. */
+.note-highlight-quote {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--blue);
+  background: rgba(58, 110, 165, 0.08);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
 .typing-dots {
   display: inline-flex;
   gap: 5px;
@@ -2008,6 +2027,18 @@ button.meta-pill {
   transition: filter 0.1s ease;
 }
 .pdf-hl.has-node { box-shadow: inset 0 -2px 0 rgba(58, 110, 165, 0.7); }
+/* A highlight that carries a note (but no question node) gets a small corner tab. */
+.pdf-hl.annotated:not(.has-node) { box-shadow: inset 0 -2px 0 rgba(176, 120, 30, 0.75); }
+.pdf-hl.annotated::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(176, 120, 30, 0.95);
+}
 .pdf-hl.active { filter: brightness(0.9); }
 .pdf-hl:hover { filter: brightness(0.92); }
 /* Translucent fills so the PDF text underneath stays readable. */

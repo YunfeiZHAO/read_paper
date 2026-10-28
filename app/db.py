@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from .config import DATA_DIR, DB_PATH, RUN_DIR, UPLOAD_DIR, WORK_DIR
+from .config import DATA_DIR, DB_PATH, NOTES_DIR, RUN_DIR, UPLOAD_DIR, WORK_DIR
 from .utils import compact_title, now_iso, rows_to_dicts, safe_json_loads
 
 DB_LOCK = threading.RLock()
@@ -52,8 +52,23 @@ def delete_file_from_disk(stored: str) -> None:
 
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, WORK_DIR, UPLOAD_DIR, RUN_DIR):
+    for path in (DATA_DIR, WORK_DIR, UPLOAD_DIR, RUN_DIR, NOTES_DIR):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def note_file_path(rel_path: str) -> Path:
+    """Absolute path of a note's Markdown file (rel_path is relative to NOTES_DIR)."""
+    return NOTES_DIR / rel_path
+
+
+def unlink_note_file(rel_path: str) -> None:
+    """Remove a note's backing .md file; never raises if it's already gone."""
+    if not rel_path:
+        return
+    try:
+        note_file_path(rel_path).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
 
 
 def connect_db() -> sqlite3.Connection:
@@ -172,11 +187,25 @@ def init_db() -> None:
                 FOREIGN KEY(node_id) REFERENCES nodes(id)
             );
 
+            -- File-backed notes. The Markdown body lives on disk (NOTES_DIR/<rel_path>);
+            -- this table only records which node/highlight a note file belongs to. One
+            -- note per target (UNIQUE), so editing upserts rather than piling up files.
+            CREATE TABLE IF NOT EXISTS notes (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,            -- 'node' | 'highlight'
+                target_id TEXT NOT NULL,       -- nodes.id or highlights.id
+                rel_path TEXT NOT NULL,        -- path to the .md file, relative to NOTES_DIR
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(kind, target_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id);
             CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
             CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at);
             CREATE INDEX IF NOT EXISTS idx_node_workspace_files_node_id ON node_workspace_files(node_id);
             CREATE INDEX IF NOT EXISTS idx_highlights_document_id ON highlights(document_id);
+            CREATE INDEX IF NOT EXISTS idx_notes_target ON notes(kind, target_id);
             CREATE INDEX IF NOT EXISTS idx_workspaces_archived ON workspaces(archived);
             -- Indexes on documents/files workspace_id are created further below, AFTER the
             -- ALTER migration that guarantees the column exists on old databases.
@@ -209,6 +238,9 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace_id ON files(workspace_id)")
 
+        _migrate_node_notes_to_files(conn)
+        _reconcile_notes(conn)
+
         # Attach any orphaned documents/files (no workspace yet) to a "Default" workspace, so
         # existing PDFs survive the introduction of the workspace layer and the home page has content.
         orphan_doc = conn.execute(
@@ -227,6 +259,43 @@ def init_db() -> None:
                 "UPDATE files SET workspace_id = ? WHERE workspace_id IS NULL",
                 (default_id,),
             )
+
+
+def _migrate_node_notes_to_files(conn: sqlite3.Connection) -> None:
+    """One-time backfill: move any legacy inline ``nodes.note_md`` into a file-backed note.
+
+    The ``note_md`` column is left in place (unread afterwards) so the upgrade is
+    non-destructive; new writes go through the notes layer / ``notes`` table.
+    """
+    rows = conn.execute(
+        "SELECT id, note_md FROM nodes WHERE note_md IS NOT NULL AND TRIM(note_md) != ''"
+    ).fetchall()
+    for row in rows:
+        node_id = row["id"]
+        already = conn.execute(
+            "SELECT 1 FROM notes WHERE kind = 'node' AND target_id = ?", (node_id,)
+        ).fetchone()
+        if already:
+            continue
+        note_id = uuid.uuid4().hex
+        rel_path = f"{note_id}.md"
+        try:
+            note_file_path(rel_path).write_text(str(row["note_md"]), encoding="utf-8")
+        except OSError:
+            continue
+        created_at = now_iso()
+        conn.execute(
+            "INSERT INTO notes (id, kind, target_id, rel_path, created_at, updated_at) "
+            "VALUES (?, 'node', ?, ?, ?, ?)",
+            (note_id, node_id, rel_path, created_at, created_at),
+        )
+
+
+def _reconcile_notes(conn: sqlite3.Connection) -> None:
+    """Drop note rows whose backing file has vanished (e.g. a crash between the two writes)."""
+    for row in conn.execute("SELECT id, rel_path FROM notes").fetchall():
+        if not note_file_path(row["rel_path"]).exists():
+            conn.execute("DELETE FROM notes WHERE id = ?", (row["id"],))
 
 
 def _ensure_default_workspace(conn: sqlite3.Connection) -> str:
@@ -266,10 +335,48 @@ def public_node(row: sqlite3.Row) -> Dict[str, Any]:
     return node
 
 
+def _read_note_md(rel_path: Optional[str]) -> str:
+    if not rel_path:
+        return ""
+    try:
+        return note_file_path(rel_path).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
+
+
+def _attach_node_notes(conn: sqlite3.Connection, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fill each node's ``note_md`` from its file-backed note (empty string when none).
+
+    Done in one batched query over the ``notes`` table rather than per node, so a big
+    tree costs a single round-trip plus one small file read per annotated node.
+    """
+    if not nodes:
+        return nodes
+    rel_by_target: Dict[str, str] = {}
+    ids = [n["id"] for n in nodes]
+    chunk = 500
+    for start in range(0, len(ids), chunk):
+        part = ids[start : start + chunk]
+        placeholders = ",".join("?" * len(part))
+        rows = conn.execute(
+            f"SELECT target_id, rel_path FROM notes WHERE kind = 'node' AND target_id IN ({placeholders})",
+            part,
+        ).fetchall()
+        for row in rows:
+            rel_by_target[row["target_id"]] = row["rel_path"]
+    for node in nodes:
+        node["note_md"] = _read_note_md(rel_by_target.get(node["id"]))
+    return nodes
+
+
 def get_node(node_id: str) -> Optional[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
         row = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
-    return public_node(row) if row else None
+        if not row:
+            return None
+        node = public_node(row)
+        _attach_node_notes(conn, [node])
+    return node
 
 
 def _resolve_file_row(row: sqlite3.Row) -> Dict[str, Any]:
@@ -370,7 +477,6 @@ def update_node(node_id: str, **fields: Any) -> None:
         "total_tokens",
         "tools_count",
         "raw_events_json",
-        "note_md",
         "error",
         "archived",
         "bookmarked",
@@ -402,7 +508,7 @@ def nodes_for_project(root_id: str) -> List[Dict[str, Any]]:
             """,
             (root_id,),
         ).fetchall()
-    return [public_node(row) for row in rows]
+        return _attach_node_notes(conn, [public_node(row) for row in rows])
 
 
 def path_to_node(node_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -425,26 +531,6 @@ def path_to_node(node_id: Optional[str]) -> List[Dict[str, Any]]:
             current = node.get("parent_id")
     path.reverse()
     return path
-
-
-def append_node_note(node_id: str, text: str) -> Dict[str, Any]:
-    addition = text.strip()
-    if not addition:
-        raise ValueError("Content to append cannot be empty")
-    with DB_LOCK, db_connection() as conn:
-        row = conn.execute("SELECT note_md FROM nodes WHERE id = ?", (node_id,)).fetchone()
-        if not row:
-            raise ValueError("Node does not exist")
-        current = str(row["note_md"] or "").rstrip()
-        next_note = f"{current}\n\n{addition}" if current else addition
-        conn.execute(
-            "UPDATE nodes SET note_md = ?, updated_at = ? WHERE id = ?",
-            (next_note, now_iso(), node_id),
-        )
-    node = get_node(node_id)
-    if not node:
-        raise ValueError("Node does not exist")
-    return node
 
 
 # ── workspaces (a user project: a group of PDFs + a shared file drawer) ────
@@ -543,11 +629,18 @@ def delete_workspace(workspace_id: str) -> Dict[str, Any]:
                 (workspace_id, workspace_id),
             ).fetchall()
         ]
+        note_paths: List[str] = []
         node_count = 0
         for doc_id in doc_ids:
             node_count += conn.execute(
                 "SELECT COUNT(*) AS c FROM nodes WHERE document_id = ?", (doc_id,)
             ).fetchone()["c"]
+            note_paths += _purge_notes(
+                conn, "node", "SELECT id FROM nodes WHERE document_id = ?", (doc_id,)
+            )
+            note_paths += _purge_notes(
+                conn, "highlight", "SELECT id FROM highlights WHERE document_id = ?", (doc_id,)
+            )
             conn.execute("DELETE FROM highlights WHERE document_id = ?", (doc_id,))
             conn.execute(
                 "DELETE FROM node_workspace_files WHERE node_id IN (SELECT id FROM nodes WHERE document_id = ?)",
@@ -562,6 +655,8 @@ def delete_workspace(workspace_id: str) -> Dict[str, Any]:
         conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     for stored in file_paths:
         delete_file_from_disk(stored)
+    for rel in note_paths:
+        unlink_note_file(rel)
     return {"deleted_documents": len(doc_ids), "deleted_nodes": int(node_count)}
 
 
@@ -658,6 +753,12 @@ def delete_document(document_id: str) -> Dict[str, Any]:
         doc = conn.execute(
             "SELECT file_id FROM documents WHERE id = ?", (document_id,)
         ).fetchone()
+        note_paths = _purge_notes(
+            conn, "node", "SELECT id FROM nodes WHERE document_id = ?", (document_id,)
+        )
+        note_paths += _purge_notes(
+            conn, "highlight", "SELECT id FROM highlights WHERE document_id = ?", (document_id,)
+        )
         conn.execute("DELETE FROM highlights WHERE document_id = ?", (document_id,))
         conn.execute(
             "DELETE FROM node_workspace_files WHERE node_id IN (SELECT id FROM nodes WHERE document_id = ?)",
@@ -684,6 +785,8 @@ def delete_document(document_id: str) -> Dict[str, Any]:
                 conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
     for stored in file_paths:
         delete_file_from_disk(stored)
+    for rel in note_paths:
+        unlink_note_file(rel)
     return {"deleted_nodes": int(node_count)}
 
 
@@ -692,7 +795,7 @@ def nodes_for_document(document_id: str) -> List[Dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM nodes WHERE document_id = ? ORDER BY created_at", (document_id,)
         ).fetchall()
-    return [public_node(row) for row in rows]
+        return _attach_node_notes(conn, [public_node(row) for row in rows])
 
 
 def create_highlight(
@@ -731,7 +834,16 @@ def create_highlight(
 def get_highlight(highlight_id: str) -> Optional[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
         row = conn.execute("SELECT * FROM highlights WHERE id = ?", (highlight_id,)).fetchone()
-    return public_highlight(row) if row else None
+        if not row:
+            return None
+        hl = public_highlight(row)
+        hl["has_note"] = (
+            conn.execute(
+                "SELECT 1 FROM notes WHERE kind = 'highlight' AND target_id = ?", (highlight_id,)
+            ).fetchone()
+            is not None
+        )
+    return hl
 
 
 def list_highlights(document_id: str) -> List[Dict[str, Any]]:
@@ -739,7 +851,21 @@ def list_highlights(document_id: str) -> List[Dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM highlights WHERE document_id = ? ORDER BY page, created_at", (document_id,)
         ).fetchall()
-    return [public_highlight(row) for row in rows]
+        hls = [public_highlight(row) for row in rows]
+        annotated = {
+            row["target_id"]
+            for row in conn.execute(
+                """
+                SELECT target_id FROM notes
+                WHERE kind = 'highlight'
+                  AND target_id IN (SELECT id FROM highlights WHERE document_id = ?)
+                """,
+                (document_id,),
+            ).fetchall()
+        }
+    for hl in hls:
+        hl["has_note"] = hl["id"] in annotated
+    return hls
 
 
 def update_highlight(highlight_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
@@ -763,7 +889,27 @@ def link_highlight_to_node(highlight_id: str, node_id: str) -> None:
         )
 
 
+def _purge_notes(conn: sqlite3.Connection, kind: str, target_subquery: str, params: tuple) -> List[str]:
+    """Within an open transaction, delete note rows whose target matches ``target_subquery``
+    and return their file paths (unlink them from disk after the commit)."""
+    rows = conn.execute(
+        f"SELECT rel_path FROM notes WHERE kind = ? AND target_id IN ({target_subquery})",
+        (kind, *params),
+    ).fetchall()
+    rel_paths = [row["rel_path"] for row in rows]
+    if rel_paths:
+        conn.execute(
+            f"DELETE FROM notes WHERE kind = ? AND target_id IN ({target_subquery})",
+            (kind, *params),
+        )
+    return rel_paths
+
+
 def delete_highlight(highlight_id: str) -> bool:
     with DB_LOCK, db_connection() as conn:
+        note_paths = _purge_notes(conn, "highlight", "?", (highlight_id,))
         cur = conn.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    for rel in note_paths:
+        unlink_note_file(rel)
+    return deleted

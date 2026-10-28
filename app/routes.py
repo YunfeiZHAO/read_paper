@@ -14,9 +14,9 @@ from .config import (
     WORKSPACE_TEXT_PREVIEW_BYTES,
     WORK_DIR,
 )
+from . import notes
 from .db import (
     DB_LOCK,
-    append_node_note,
     create_document,
     create_highlight,
     create_node,
@@ -40,6 +40,7 @@ from .db import (
     public_node,
     touch_document,
     touch_workspace,
+    unlink_note_file,
     update_highlight,
     update_node,
     update_workspace,
@@ -400,21 +401,57 @@ async def api_patch_node_note(node_id: str, request: Request) -> Dict[str, Any]:
     note_md = payload.get("note_md", "")
     if not isinstance(note_md, str):
         note_md = str(note_md)
-    update_node(node_id, note_md=note_md)
+    notes.set_note("node", node_id, note_md)
     return {"node": get_node(node_id)}
 
 
 @router.post("/api/nodes/{node_id}/note/append")
 async def api_append_node_note(node_id: str, request: Request) -> Dict[str, Any]:
+    if not get_node(node_id):
+        raise HTTPException(status_code=404, detail="Node does not exist")
     payload = await _json_body(request)
     text = payload.get("text", "")
     if not isinstance(text, str):
         text = str(text)
     try:
-        node = append_node_note(node_id, text)
+        notes.append_note("node", node_id, text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"node": node}
+    return {"node": get_node(node_id)}
+
+
+# ── notes (file-backed Markdown; one per node/highlight) ────────────────────
+
+
+def _require_note_target(kind: str, target_id: str) -> None:
+    """Validate the note kind and that its target (node or highlight) exists."""
+    if kind not in notes.VALID_KINDS:
+        raise HTTPException(status_code=404, detail="Unknown note target type")
+    exists = get_node(target_id) if kind == "node" else get_highlight(target_id)
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"{kind.capitalize()} does not exist")
+
+
+@router.get("/api/notes/{kind}/{target_id}")
+def api_get_note(kind: str, target_id: str) -> Dict[str, Any]:
+    _require_note_target(kind, target_id)
+    return {"note": notes.get_note(kind, target_id)}
+
+
+@router.put("/api/notes/{kind}/{target_id}")
+async def api_put_note(kind: str, target_id: str, request: Request) -> Dict[str, Any]:
+    _require_note_target(kind, target_id)
+    payload = await _json_body(request)
+    md = payload.get("md", "")
+    if not isinstance(md, str):
+        md = str(md)
+    return {"note": notes.set_note(kind, target_id, md)}
+
+
+@router.delete("/api/notes/{kind}/{target_id}")
+def api_delete_note(kind: str, target_id: str) -> Dict[str, Any]:
+    _require_note_target(kind, target_id)
+    return {"deleted": notes.delete_note(kind, target_id)}
 
 
 @router.get("/api/projects/{project_id}/notes")
@@ -472,6 +509,31 @@ def api_delete_node(node_id: str) -> Dict[str, Any]:
             (node_id,),
         ).fetchone()
         deleted_count = int(count_row["count"] if count_row else 0)
+        # Collect the doomed subtree's node-note files, drop their rows, unlink after commit.
+        note_rows = conn.execute(
+            """
+            WITH RECURSIVE doomed(id) AS (
+                SELECT ?
+                UNION ALL
+                SELECT nodes.id FROM nodes JOIN doomed ON nodes.parent_id = doomed.id
+            )
+            SELECT rel_path FROM notes
+            WHERE kind = 'node' AND target_id IN (SELECT id FROM doomed)
+            """,
+            (node_id,),
+        ).fetchall()
+        note_paths = [row["rel_path"] for row in note_rows]
+        conn.execute(
+            """
+            WITH RECURSIVE doomed(id) AS (
+                SELECT ?
+                UNION ALL
+                SELECT nodes.id FROM nodes JOIN doomed ON nodes.parent_id = doomed.id
+            )
+            DELETE FROM notes WHERE kind = 'node' AND target_id IN (SELECT id FROM doomed)
+            """,
+            (node_id,),
+        )
         conn.execute(
             """
             WITH RECURSIVE doomed(id) AS (
@@ -494,6 +556,8 @@ def api_delete_node(node_id: str) -> Dict[str, Any]:
             """,
             (node_id,),
         )
+    for rel in note_paths:
+        unlink_note_file(rel)
     return {"deleted": deleted_count, "parent_id": node.get("parent_id")}
 
 

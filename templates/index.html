@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>paper reader tree</title>
+    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -215,6 +216,7 @@
           <button type="button" class="hl-color" data-color="blue" style="--c:#a9d4ff" title="Blue"></button>
           <button type="button" class="hl-color" data-color="pink" style="--c:#ffb3c7" title="Pink"></button>
         </div>
+        <button id="hlNoteBtn" type="button" class="hl-menu-item">Note</button>
         <button id="hlGotoNodeBtn" type="button" class="hl-menu-item">Go to question node</button>
         <button id="hlDeleteBtn" type="button" class="hl-menu-item danger">Delete highlight</button>
       </div>
@@ -228,6 +230,9 @@
     </div>
 
     <script src="/static/vendor/pdfjs/pdf.min.js"></script>
+    <script src="/static/vendor/marked/marked.min.js"></script>
+    <script src="/static/vendor/dompurify/purify.min.js"></script>
+    <script src="/static/vendor/katex/katex.min.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

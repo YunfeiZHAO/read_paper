@@ -70,6 +70,10 @@ const state = {
   sidePanelWidth: DEFAULT_SIDE_WIDTH,
   sending: false,
   activeSideTab: "conversation",
+  // The note panel targets either the selected node or, when set, a highlight. noteLoadedKey
+  // is `${kind}:${id}` of whatever draft is currently loaded into noteDraft.
+  noteHighlightId: null,
+  noteLoadedKey: null,
   noteDraftNodeId: null,
   noteDraft: "",
   noteDirty: false,
@@ -159,6 +163,7 @@ const els = {
   selAskBtn: document.getElementById("selAskBtn"),
   highlightMenu: document.getElementById("highlightMenu"),
   hlGotoNodeBtn: document.getElementById("hlGotoNodeBtn"),
+  hlNoteBtn: document.getElementById("hlNoteBtn"),
   hlDeleteBtn: document.getElementById("hlDeleteBtn"),
   togglePdfBtn: document.getElementById("togglePdfBtn"),
   toggleTreeBtn: document.getElementById("toggleTreeBtn"),
@@ -267,259 +272,135 @@ function workspaceRefFromFile(file) {
   };
 }
 
-function appendInlineMarkdown(parent, text) {
-  const source = String(text || "");
-  const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
-  let lastIndex = 0;
-  let match;
-
-  function appendText(value) {
-    if (value) parent.appendChild(document.createTextNode(value));
-  }
-
-  while ((match = pattern.exec(source))) {
-    appendText(source.slice(lastIndex, match.index));
-    const token = match[0];
-    if (token.startsWith("`")) {
-      const code = document.createElement("code");
-      code.textContent = token.slice(1, -1);
-      parent.appendChild(code);
-    } else if (token.startsWith("**")) {
-      const strong = document.createElement("strong");
-      strong.textContent = token.slice(2, -2);
-      parent.appendChild(strong);
-    } else if (token.startsWith("*")) {
-      const emphasis = document.createElement("em");
-      emphasis.textContent = token.slice(1, -1);
-      parent.appendChild(emphasis);
-    } else {
-      const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-      if (!linkMatch) {
-        appendText(token);
-      } else {
-        const [, label, href] = linkMatch;
-        let safeUrl = null;
-        const workspaceRelPath = workspaceRelPathFromHref(href);
-        try {
-          const url = new URL(href, window.location.origin);
-          if (["http:", "https:", "mailto:"].includes(url.protocol)) safeUrl = url.href;
-        } catch {
-          safeUrl = null;
-        }
-        if (workspaceRelPath) {
-          const link = document.createElement("a");
-          const file = workspaceFileForPath(workspaceRelPath);
-          link.href = workspaceFileUrl(file);
-          link.textContent = label;
-          link.addEventListener("click", (event) => {
-            event.preventDefault();
-            openWorkspaceFile(file).catch((err) => window.alert(err.message));
-          });
-          parent.appendChild(link);
-        } else if (!safeUrl) {
-          appendText(label);
-        } else {
-          const link = document.createElement("a");
-          link.href = safeUrl;
-          link.textContent = label;
-          if (!safeUrl.startsWith(window.location.origin)) {
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-          }
-          parent.appendChild(link);
-        }
-      }
-    }
-    lastIndex = pattern.lastIndex;
-  }
-  appendText(source.slice(lastIndex));
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
+// marked renders links as plain <a href>; rewire the ones that point at a workspace
+// scratch file to open in-app, harden external links, and drop unsafe protocols.
+function enhanceMarkdownLinks(root) {
+  root.querySelectorAll("a[href]").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    const workspaceRelPath = workspaceRelPathFromHref(href);
+    if (workspaceRelPath) {
+      const file = workspaceFileForPath(workspaceRelPath);
+      link.href = workspaceFileUrl(file);
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        openWorkspaceFile(file).catch((err) => window.alert(err.message));
+      });
+      return;
+    }
+    let safeUrl = null;
+    try {
+      const url = new URL(href, window.location.origin);
+      if (["http:", "https:", "mailto:"].includes(url.protocol)) safeUrl = url.href;
+    } catch {
+      safeUrl = null;
+    }
+    if (!safeUrl) {
+      link.replaceWith(document.createTextNode(link.textContent || ""));
+      return;
+    }
+    link.href = safeUrl;
+    if (!safeUrl.startsWith(window.location.origin)) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+  });
+}
+
+// Private-use sentinels wrapping an index; marked and DOMPurify pass them through as
+// plain text, so we can splice KaTeX (and restore code) back in after Markdown runs.
+const MATH_OPEN = "";
+const MATH_CLOSE = "";
+const CODE_OPEN = "";
+const CODE_CLOSE = "";
+
+// Pull $$…$$ and $…$ out of the source BEFORE Markdown parses it, so emphasis/escape
+// rules can't mangle `_` or `*` inside a formula. Code spans/fences are masked first so
+// a literal `$` in code is never mistaken for math.
+function protectMath(src, mathBlocks) {
+  const codeBlocks = [];
+  let masked = String(src || "").replace(/```[\s\S]*?```|`[^`\n]*`/g, (m) => {
+    const i = codeBlocks.length;
+    codeBlocks.push(m);
+    return `${CODE_OPEN}${i}${CODE_CLOSE}`;
+  });
+  masked = masked.replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex) => {
+    const i = mathBlocks.length;
+    mathBlocks.push({ tex: tex.trim(), display: true });
+    return `${MATH_OPEN}${i}${MATH_CLOSE}`;
+  });
+  masked = masked.replace(/(?<![\\$])\$(?!\s)([^\n$]+?)(?<![\\\s])\$(?!\d)/g, (_m, tex) => {
+    const i = mathBlocks.length;
+    mathBlocks.push({ tex: tex.trim(), display: false });
+    return `${MATH_OPEN}${i}${MATH_CLOSE}`;
+  });
+  // Put code spans back so marked renders them as <code>/<pre> normally.
+  masked = masked.replace(new RegExp(`${CODE_OPEN}(\\d+)${CODE_CLOSE}`, "g"), (_m, i) => codeBlocks[Number(i)]);
+  return masked;
+}
+
+// Walk the rendered tree and replace each math sentinel with KaTeX output.
+function renderMathInto(root, mathBlocks) {
+  if (!mathBlocks.length || !window.katex) return;
+  const re = new RegExp(`${MATH_OPEN}(\\d+)${MATH_CLOSE}`);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const textNode of textNodes) {
+    if (!textNode.nodeValue || textNode.nodeValue.indexOf(MATH_OPEN) === -1) continue;
+    const frag = document.createDocumentFragment();
+    let rest = textNode.nodeValue;
+    let m;
+    while ((m = re.exec(rest))) {
+      if (m.index > 0) frag.appendChild(document.createTextNode(rest.slice(0, m.index)));
+      const block = mathBlocks[Number(m[1])];
+      const span = document.createElement("span");
+      if (block) {
+        try {
+          span.innerHTML = window.katex.renderToString(block.tex, {
+            displayMode: block.display,
+            throwOnError: false,
+          });
+        } catch {
+          span.textContent = block.display ? `$$${block.tex}$$` : `$${block.tex}$`;
+        }
+      }
+      frag.appendChild(span);
+      rest = rest.slice(m.index + m[0].length);
+    }
+    if (rest) frag.appendChild(document.createTextNode(rest));
+    textNode.replaceWith(frag);
+  }
+}
+
+// Markdown (+LaTeX) → sanitized DOM. Used for answers, node notes, and highlight notes.
 function renderMarkdown(text) {
   const root = document.createElement("div");
   root.className = "markdown-body";
-  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
-  let paragraph = [];
-  let list = null;
-  let listType = "";
-
-  function isTableSeparator(value) {
-    const cells = splitTableRow(value);
-    if (cells.length < 2) return false;
-    return cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  const source = String(text == null ? "" : text);
+  if (!source.trim()) return root;
+  const mathBlocks = [];
+  const prepared = protectMath(source, mathBlocks);
+  let html;
+  if (window.marked) {
+    html = window.marked.parse(prepared, { gfm: true, breaks: false });
+  } else {
+    html = `<p>${escapeHtml(prepared).replace(/\n/g, "<br>")}</p>`;
   }
-
-  function splitTableRow(value) {
-    let row = String(value || "").trim();
-    if (!row.includes("|")) return [];
-    if (row.startsWith("|")) row = row.slice(1);
-    if (row.endsWith("|")) row = row.slice(0, -1);
-    return row.split("|").map((cell) => cell.trim());
+  if (window.DOMPurify) {
+    html = window.DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
   }
-
-  function flushParagraph() {
-    const content = paragraph.join(" ").trim();
-    paragraph = [];
-    if (!content) return;
-    const p = document.createElement("p");
-    appendInlineMarkdown(p, content);
-    root.appendChild(p);
-  }
-
-  function resetList() {
-    list = null;
-    listType = "";
-  }
-
-  function ensureList(type) {
-    if (list && listType === type) return list;
-    flushParagraph();
-    list = document.createElement(type);
-    listType = type;
-    root.appendChild(list);
-    return list;
-  }
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    const fence = trimmed.match(/^```(.*)$/);
-    if (fence) {
-      flushParagraph();
-      resetList();
-      const language = fence[1].trim();
-      const codeLines = [];
-      i += 1;
-      while (i < lines.length && !lines[i].trim().startsWith("```")) {
-        codeLines.push(lines[i]);
-        i += 1;
-      }
-      const pre = document.createElement("pre");
-      const code = document.createElement("code");
-      if (language) code.dataset.language = language;
-      code.textContent = codeLines.join("\n");
-      pre.appendChild(code);
-      root.appendChild(pre);
-      continue;
-    }
-
-    if (!trimmed) {
-      flushParagraph();
-      resetList();
-      continue;
-    }
-
-    if (/^---+$/.test(trimmed)) {
-      flushParagraph();
-      resetList();
-      root.appendChild(document.createElement("hr"));
-      continue;
-    }
-
-    if (trimmed.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
-      const headers = splitTableRow(trimmed);
-      const alignments = splitTableRow(lines[i + 1]).map((cell) => {
-        const value = cell.trim();
-        if (value.startsWith(":") && value.endsWith(":")) return "center";
-        if (value.endsWith(":")) return "right";
-        return "left";
-      });
-      if (headers.length) {
-        flushParagraph();
-        resetList();
-        const wrap = document.createElement("div");
-        wrap.className = "markdown-table-wrap";
-        const table = document.createElement("table");
-        const thead = document.createElement("thead");
-        const headerRow = document.createElement("tr");
-        for (const [index, header] of headers.entries()) {
-          const th = document.createElement("th");
-          th.style.textAlign = alignments[index] || "left";
-          appendInlineMarkdown(th, header);
-          headerRow.appendChild(th);
-        }
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
-        const tbody = document.createElement("tbody");
-        i += 2;
-        while (i < lines.length && lines[i].trim().includes("|") && lines[i].trim()) {
-          const cells = splitTableRow(lines[i]);
-          const tr = document.createElement("tr");
-          for (let index = 0; index < headers.length; index += 1) {
-            const td = document.createElement("td");
-            td.style.textAlign = alignments[index] || "left";
-            appendInlineMarkdown(td, cells[index] || "");
-            tr.appendChild(td);
-          }
-          tbody.appendChild(tr);
-          i += 1;
-        }
-        i -= 1;
-        table.appendChild(tbody);
-        wrap.appendChild(table);
-        root.appendChild(wrap);
-        continue;
-      }
-    }
-
-    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
-    if (heading) {
-      flushParagraph();
-      resetList();
-      const level = Math.min(heading[1].length, 6);
-      const h = document.createElement(`h${level}`);
-      appendInlineMarkdown(h, heading[2]);
-      root.appendChild(h);
-      continue;
-    }
-
-    const quote = trimmed.match(/^>\s?(.*)$/);
-    if (quote) {
-      flushParagraph();
-      resetList();
-      const blockquote = document.createElement("blockquote");
-      const quoted = [];
-      while (i < lines.length) {
-        const quoteLine = lines[i].trim().match(/^>\s?(.*)$/);
-        if (!quoteLine) break;
-        quoted.push(quoteLine[1]);
-        i += 1;
-      }
-      i -= 1;
-      appendInlineMarkdown(blockquote, quoted.join(" "));
-      root.appendChild(blockquote);
-      continue;
-    }
-
-    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
-    if (unordered) {
-      const ul = ensureList("ul");
-      const li = document.createElement("li");
-      appendInlineMarkdown(li, unordered[1]);
-      ul.appendChild(li);
-      continue;
-    }
-
-    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-    if (ordered) {
-      const ol = ensureList("ol");
-      const li = document.createElement("li");
-      appendInlineMarkdown(li, ordered[1]);
-      ol.appendChild(li);
-      continue;
-    }
-
-    resetList();
-    paragraph.push(line);
-  }
-
-  flushParagraph();
-  if (!root.childElementCount && text) {
-    const p = document.createElement("p");
-    p.textContent = String(text);
-    root.appendChild(p);
-  }
+  root.innerHTML = html;
+  renderMathInto(root, mathBlocks);
+  enhanceMarkdownLinks(root);
   return root;
 }
 
@@ -1402,6 +1283,7 @@ function makeNodeCard(node) {
 function selectNode(id) {
   hideNodePromptPreview();
   hideNodeNotePreviewImmediate();
+  state.noteHighlightId = null; // choosing a node exits highlight-note mode
   state.selectedId = id;
   state.parentId = id;
   render();
@@ -1723,22 +1605,52 @@ function renderSideTabs() {
   els.notePane.hidden = state.activeSideTab !== "notes";
 }
 
-function ensureNoteDraft(node) {
-  if (!node) {
-    state.noteDraftNodeId = null;
+// The note panel edits either the selected node's note or, when a highlight note is
+// open, that highlight's note. Returns {kind, id, node|hl} or null.
+function currentNoteTarget() {
+  if (state.noteHighlightId) {
+    const hl = highlightById(state.noteHighlightId);
+    if (hl) return { kind: "highlight", id: hl.id, hl };
+    state.noteHighlightId = null; // the highlight was deleted; fall back to the node
+  }
+  const node = selectedNode();
+  return node ? { kind: "node", id: node.id, node } : null;
+}
+
+function noteTargetKey(target) {
+  return target ? `${target.kind}:${target.id}` : null;
+}
+
+// Load the draft for the current target when it changes. Node notes are already in
+// memory (node.note_md); highlight notes are fetched on demand and re-render on arrival.
+// An unchanged target keeps any in-progress (dirty) draft intact.
+function ensureNoteDraft() {
+  const target = currentNoteTarget();
+  const key = noteTargetKey(target);
+  if (key === state.noteLoadedKey) return;
+  state.noteLoadedKey = key;
+  state.noteDraftNodeId = target && target.kind === "node" ? target.id : null;
+  state.noteDirty = false;
+  state.noteEditing = false;
+  state.projectNotes = [];
+  state.projectNotesProjectId = null;
+  if (!target) {
     state.noteDraft = "";
-    state.noteDirty = false;
-    state.noteEditing = false;
     return;
   }
-  if (state.noteDraftNodeId !== node.id) {
-    state.noteDraftNodeId = node.id;
-    state.noteDraft = node.note_md || "";
-    state.noteDirty = false;
-    state.noteEditing = false;
-    state.projectNotes = [];
-    state.projectNotesProjectId = null;
+  if (target.kind === "node") {
+    state.noteDraft = target.node.note_md || "";
+    return;
   }
+  state.noteDraft = "";
+  fetch(`/api/notes/highlight/${target.id}`)
+    .then((res) => res.json())
+    .then((data) => {
+      if (state.noteLoadedKey !== key) return; // target changed before the fetch landed
+      state.noteDraft = (data.note && data.note.md) || "";
+      renderNotePanel();
+    })
+    .catch(console.error);
 }
 
 function renderProjectNotesSummary() {
@@ -1774,24 +1686,29 @@ function renderProjectNotesSummary() {
 }
 
 function renderNotePanel() {
-  const node = selectedNode();
-  ensureNoteDraft(node);
-  const disabled = !node;
+  ensureNoteDraft();
+  const target = currentNoteTarget();
+  const disabled = !target;
+  const isHighlight = Boolean(target && target.kind === "highlight");
   els.noteEditor.disabled = disabled || state.noteSaving;
   els.noteEditBtn.disabled = disabled || state.noteSaving;
   els.noteSaveBtn.disabled = disabled || state.noteSaving || !state.noteEditing;
   els.noteEditBtn.hidden = disabled || state.noteEditing;
   els.noteSaveBtn.hidden = disabled || !state.noteEditing;
-  els.noteProjectBtn.disabled = !state.selectedProjectId || state.selectedProjectId === "__new__";
+  // "Project notes" aggregates a node tree — it has no meaning for a highlight note.
+  els.noteProjectBtn.hidden = isHighlight;
+  els.noteProjectBtn.disabled =
+    isHighlight || !state.selectedProjectId || state.selectedProjectId === "__new__";
+  const label = isHighlight ? "Highlight notes" : "Node notes";
   els.noteStatus.textContent = disabled
     ? "say something"
     : state.noteSaving
       ? "Saving"
       : state.noteDirty
-        ? "Node notes unsaved"
+        ? `${label} unsaved`
         : state.noteEditing
           ? "Editing notes"
-          : "Node notes";
+          : label;
   if (els.noteEditor.value !== state.noteDraft) {
     els.noteEditor.value = state.noteDraft;
   }
@@ -1800,17 +1717,29 @@ function renderNotePanel() {
 
   const rendered = document.createElement("div");
   rendered.className = "note-preview-section";
+  if (isHighlight) {
+    const quote = document.createElement("blockquote");
+    quote.className = "note-highlight-quote";
+    quote.textContent = target.hl.quote || "(highlight)";
+    rendered.appendChild(quote);
+  }
   const noteText = state.noteDraft.trim();
   if (noteText) {
     rendered.appendChild(renderMarkdown(noteText));
   } else {
     const empty = document.createElement("div");
     empty.className = "conversation-empty";
-    empty.textContent = "say something";
+    empty.textContent = disabled
+      ? "say something"
+      : isHighlight
+        ? "No note yet — click ✎ to add one"
+        : "say something";
     rendered.appendChild(empty);
   }
-  const projectNotes = renderProjectNotesSummary();
-  if (projectNotes) rendered.appendChild(projectNotes);
+  if (!isHighlight) {
+    const projectNotes = renderProjectNotesSummary();
+    if (projectNotes) rendered.appendChild(projectNotes);
+  }
   els.noteRendered.replaceChildren(rendered);
 }
 
@@ -2286,29 +2215,50 @@ async function sendPrompt(event) {
 }
 
 async function saveNote() {
-  const node = selectedNode();
-  if (!node || state.noteSaving) return;
+  const target = currentNoteTarget();
+  if (!target || state.noteSaving) return;
   state.noteSaving = true;
   renderNotePanel();
   try {
-    const res = await fetch(`/api/nodes/${node.id}/note`, {
-      method: "PATCH",
+    const res = await fetch(`/api/notes/${target.kind}/${target.id}`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ note_md: els.noteEditor.value }),
+      body: JSON.stringify({ md: els.noteEditor.value }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Save failed");
+    if (!res.ok) throw new Error(data.detail || data.error || "Save failed");
+    const savedMd = (data.note && data.note.md) || "";
     state.noteDirty = false;
     state.noteEditing = false;
-    state.noteDraftNodeId = data.node.id;
-    state.noteDraft = data.node.note_md || "";
-    await fetchTree();
+    state.noteDraft = savedMd;
+    state.noteLoadedKey = noteTargetKey(target);
+    if (target.kind === "node") {
+      state.noteDraftNodeId = target.id;
+      const node = state.nodeById.get(target.id);
+      if (node) node.note_md = savedMd; // keep the tree's note indicator in sync
+      await fetchTree();
+    } else {
+      target.hl.has_note = Boolean(savedMd);
+      drawHighlightsForPage(target.hl.page);
+    }
   } catch (err) {
     window.alert(err.message);
   } finally {
     state.noteSaving = false;
     renderNotePanel();
   }
+}
+
+// Open a highlight's note in the side panel (used by click + the highlight menu).
+function openHighlightNote(hl) {
+  if (!hl) return;
+  state.noteHighlightId = hl.id;
+  state.activeHighlightId = hl.id;
+  if (!state.paneOpen.chat) setPaneOpen("chat", true);
+  state.activeSideTab = "notes";
+  renderSideTabs();
+  renderNotePanel();
+  drawHighlightsForPage(hl.page);
 }
 
 async function readProjectNotes() {
@@ -2505,13 +2455,16 @@ async function appendSelectionToNote() {
   });
   const data = await res.json();
   if (!res.ok) {
-    window.alert(data.error || "Append failed");
+    window.alert(data.detail || data.error || "Append failed");
     return;
   }
+  state.noteHighlightId = null; // the conversation selection belongs to the node
   state.activeSideTab = "notes";
   state.noteDirty = false;
+  state.noteEditing = false;
   state.noteDraftNodeId = data.node.id;
   state.noteDraft = data.node.note_md || "";
+  state.noteLoadedKey = `node:${data.node.id}`;
   await fetchTree();
 }
 
@@ -2862,13 +2815,18 @@ function drawHighlightsForPage(page) {
       const box = document.createElement("div");
       box.className = `pdf-hl hl-${hl.color || "yellow"}`;
       if (hl.node_id) box.classList.add("has-node");
+      if (hl.has_note) box.classList.add("annotated");
       if (hl.id === state.activeHighlightId) box.classList.add("active");
       box.style.left = `${rect.x * w}px`;
       box.style.top = `${rect.y * h}px`;
       box.style.width = `${rect.w * w}px`;
       box.style.height = `${rect.h * h}px`;
       box.dataset.highlightId = hl.id;
-      box.title = hl.node_id ? "Click: go to question node · Right-click: menu" : "Right-click: menu";
+      box.title = hl.node_id
+        ? "Click: go to question node · Right-click: menu"
+        : hl.has_note
+          ? "Click: open note · Right-click: menu"
+          : "Click: add note · Right-click: menu";
       boxes.push(box);
     }
   }
@@ -2915,6 +2873,9 @@ function onHighlightClick(event) {
     if (!state.paneOpen.tree) setPaneOpen("tree", true);
     selectNode(hl.node_id);
     focusSelected();
+  } else {
+    // A highlight with no question node: open (or start) its note in the side panel.
+    openHighlightNote(hl);
   }
 }
 
@@ -3057,15 +3018,17 @@ function wireEvents() {
     button.addEventListener("click", () => setSideTab(button.dataset.sideTab));
   }
   els.noteEditor.addEventListener("input", () => {
-    const node = selectedNode();
-    state.noteDraftNodeId = node ? node.id : null;
+    const target = currentNoteTarget();
     state.noteDraft = els.noteEditor.value;
-    state.noteDirty = Boolean(node);
-    renderTree();
+    state.noteDirty = Boolean(target);
+    if (target && target.kind === "node") {
+      state.noteDraftNodeId = target.id;
+      renderTree(); // live-updates the tree's note indicator while typing
+    }
     renderNotePanel();
   });
   els.noteEditBtn.addEventListener("click", () => {
-    if (!selectedNode()) return;
+    if (!currentNoteTarget()) return;
     state.noteEditing = true;
     renderNotePanel();
     els.noteEditor.focus();
@@ -3213,6 +3176,13 @@ function wireEvents() {
         selectNode(hl.node_id);
         focusSelected();
       }
+    });
+  }
+  if (els.hlNoteBtn) {
+    els.hlNoteBtn.addEventListener("click", () => {
+      const hl = highlightById(state.activeHighlightId);
+      hideHighlightMenu();
+      openHighlightNote(hl);
     });
   }
   els.hlDeleteBtn.addEventListener("click", () => {

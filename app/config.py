@@ -37,6 +37,10 @@ DB_PATH = DATA_DIR / "codex_qa.sqlite"
 WORK_DIR = Path(os.environ.get("CODEX_QA_WORKDIR", DATA_DIR / "workspace"))
 UPLOAD_DIR = WORK_DIR / "uploads"
 RUN_DIR = DATA_DIR / "runs"
+# Markdown note bodies live here as <note_id>.md files; the `notes` table stores the
+# relationship (kind, target_id) -> file. Kept OUTSIDE WORK_DIR on purpose, so the
+# workspace-snapshot diffing never mistakes a note for AI-generated scratch output.
+NOTES_DIR = DATA_DIR / "notes"
 
 # ── Codex backend ─────────────────────────────────────────────────────────
 CODEX_TIMEOUT_SECONDS = int(os.environ.get("CODEX_TIMEOUT_SECONDS", "1200"))
