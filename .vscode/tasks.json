@@ -4,7 +4,7 @@
     {
       "label": "uv sync",
       "type": "shell",
-      "command": "uv sync",
+      "command": "uv sync --extra tools",
       "problemMatcher": []
     }
   ]

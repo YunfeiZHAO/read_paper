@@ -1889,26 +1889,37 @@ function renderDocNotesBlock() {
   if (state.docNotesLoading && state.docNotesDocId !== state.currentDocId) {
     body.innerHTML = '<div class="soft-label">Loading…</div>';
   } else if (!state.docNotes.length) {
-    body.innerHTML = '<div class="soft-label">No notes on this PDF yet</div>';
+    body.innerHTML = '<div class="soft-label">Nothing marked on this PDF yet</div>';
   } else {
     for (const item of state.docNotes) {
       const row = document.createElement("article");
       row.className = "doc-note-item";
+      if (!item.has_note) row.classList.add("doc-note-item-bare");
       const button = document.createElement("button");
       button.type = "button";
       button.className = "doc-note-title";
       const badge = document.createElement("span");
       badge.className = `doc-note-kind doc-note-kind-${item.kind}`;
       badge.textContent = item.page != null ? `p${item.page + 1}` : item.kind === "node" ? "Q" : "HL";
+      if (item.color) badge.style.setProperty("--hl-color", item.color);
       button.appendChild(badge);
       const label = document.createElement("span");
       label.className = "doc-note-label";
+      // For a bare highlight the quote itself is the interesting bit; for a note the
+      // title plus the note body carry it.
       label.textContent = item.title || (item.kind === "node" ? "Node" : "Highlight");
       button.appendChild(label);
+      // A dot marks rows that have a written note; the note body itself shows when the
+      // row is clicked, so the list stays compact.
+      if (item.has_note) {
+        const dot = document.createElement("span");
+        dot.className = "doc-note-dot";
+        dot.title = "Has a note";
+        button.appendChild(dot);
+      }
       if (!item.highlight_id) button.classList.add("doc-note-no-anchor");
       button.addEventListener("click", () => jumpToDocNote(item));
       row.appendChild(button);
-      row.appendChild(renderMarkdown(item.md || ""));
       body.appendChild(row);
     }
   }

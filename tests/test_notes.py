@@ -186,5 +186,22 @@ def test_api_document_notes_aggregates_node_and_highlight_notes(client, fresh_db
     assert [it["page"] for it in data["notes"]] == [0, 2]
 
 
+def test_api_document_notes_includes_bare_marked_parts(client, fresh_db):
+    """Highlights with no note still show up as marked parts (has_note=False, empty md)."""
+    from app import notes
+
+    _, doc = _document(fresh_db)
+    bare = fresh_db.create_highlight(doc["id"], 1, [{"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.02}], "bare quote", "yellow")
+    annotated = _highlight(fresh_db, doc)
+    notes.set_note("highlight", annotated["id"], "has a note")
+
+    items = {it["highlight_id"]: it for it in client.get(f"/api/documents/{doc['id']}/notes").json()["notes"]}
+    assert items[bare["id"]]["has_note"] is False
+    assert items[bare["id"]]["md"] == ""
+    assert items[bare["id"]]["title"] == "bare quote"
+    assert items[bare["id"]]["color"] == "yellow"
+    assert items[annotated["id"]]["has_note"] is True
+
+
 def test_api_document_notes_missing_document(client, fresh_db):
     assert client.get("/api/documents/nope/notes").status_code == 404

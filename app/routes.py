@@ -475,9 +475,12 @@ def api_project_notes(project_id: str) -> Dict[str, Any]:
 
 @router.get("/api/documents/{document_id}/notes")
 def api_document_notes(document_id: str) -> Dict[str, Any]:
-    """Every note attached to a PDF — node notes and highlight notes — each carrying the
-    highlight it anchors to (a node note anchors to the node's source highlight) so the
-    reader can jump the PDF viewer to where the note was taken. Ordered by page, then time."""
+    """Every marked part of a PDF — node notes, highlight notes, and the bare highlights
+    with no note yet — each carrying the highlight it anchors to (a node note anchors to
+    the node's source highlight) so the reader can jump the PDF viewer to where it was
+    marked. Items without a note carry an empty ``md`` and ``has_note=False`` so the list
+    reads as the full record of interesting parts marked in the paper. Ordered by page,
+    then time."""
     document = get_document(document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document does not exist")
@@ -487,38 +490,56 @@ def api_document_notes(document_id: str) -> Dict[str, Any]:
     def _loc(hl: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Page/rect anchor for a highlight (page None sorts such notes last)."""
         if not hl:
-            return {"highlight_id": None, "page": None, "quote": None}
-        return {"highlight_id": hl["id"], "page": hl.get("page"), "quote": hl.get("quote") or ""}
+            return {"highlight_id": None, "page": None, "quote": None, "color": None}
+        return {
+            "highlight_id": hl["id"],
+            "page": hl.get("page"),
+            "quote": hl.get("quote") or "",
+            "color": hl.get("color"),
+        }
 
     items: List[Dict[str, Any]] = []
+    # Node notes. A node's source highlight is "represented" by its node row, so we don't
+    # also emit a bare highlight row for it below.
+    covered_highlight_ids: set = set()
     for node in nodes_for_document(document_id):
         md = str(node.get("note_md") or "").strip()
-        if not md:
-            continue
         hl = highlights_by_id.get(node.get("source_highlight_id"))
+        if hl:
+            covered_highlight_ids.add(hl["id"])
+        # A node with neither a note nor a source highlight is just a bare question with
+        # nothing to anchor to; skip it (its highlight, if any, is listed on its own).
+        if not md and not hl:
+            continue
         items.append({
             "kind": "node",
             "target_id": node["id"],
             "node_id": node["id"],
             "title": node.get("title") or "Node",
             "md": md,
+            "has_note": bool(md),
             "updated_at": node.get("updated_at") or node.get("created_at"),
             **_loc(hl),
         })
+    # Every highlight that isn't already shown via its node row — with its note if it has
+    # one, otherwise as a bare marked part (empty md, has_note=False).
     for hl in highlights_by_id.values():
-        if not hl.get("has_note"):
+        if hl["id"] in covered_highlight_ids:
             continue
-        note = notes.get_note("highlight", hl["id"])
-        md = str((note or {}).get("md") or "").strip()
-        if not md:
-            continue
+        md = ""
+        updated_at = hl.get("created_at")
+        if hl.get("has_note"):
+            note = notes.get_note("highlight", hl["id"])
+            md = str((note or {}).get("md") or "").strip()
+            updated_at = (note or {}).get("updated_at") or updated_at
         items.append({
             "kind": "highlight",
             "target_id": hl["id"],
             "node_id": hl.get("node_id"),
             "title": (hl.get("quote") or "Highlight").strip() or "Highlight",
             "md": md,
-            "updated_at": (note or {}).get("updated_at"),
+            "has_note": bool(md),
+            "updated_at": updated_at,
             **_loc(hl),
         })
 

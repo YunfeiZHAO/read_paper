@@ -1441,9 +1441,36 @@ button.meta-pill {
   text-align: center;
 }
 
+/* Highlight marks: warm amber. Node (question) marks: cool blue — distinct at a glance. */
 .doc-note-kind-highlight {
   background: #fff0c2;
   color: #8a6d00;
+}
+
+.doc-note-kind-node {
+  background: #dce8ff;
+  color: #2b55a8;
+}
+
+/* When the badge carries its highlight's own color, show it as a border accent so the
+   list mirrors the marks on the page while the page number stays readable. */
+.doc-note-kind[style*="--hl-color"] {
+  border: 1.5px solid transparent;
+}
+
+/* Bare marked parts (no note written yet) read lighter than full notes. */
+.doc-note-item-bare {
+  background: var(--panel, #faf8f2);
+}
+
+/* A small dot at the end of a row that has a written note. */
+.doc-note-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 999px;
+  background: var(--blue);
 }
 
 .doc-note-label {
