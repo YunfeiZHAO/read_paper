@@ -1706,9 +1706,36 @@ function downloadEventsJson() {
   URL.revokeObjectURL(url);
 }
 
+async function copyTextToClipboard(text) {
+  // navigator.clipboard only exists in a secure context (https / localhost /
+  // 127.0.0.1). When the app is opened over a LAN IP it is undefined, so fall
+  // back to a hidden <textarea> + execCommand('copy').
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  if (!ok) throw new Error("copy command failed");
+}
+
 async function copyEventsJson() {
   try {
-    await navigator.clipboard.writeText(_eventsModalJson);
+    await copyTextToClipboard(_eventsModalJson);
     els.eventsCopyBtn.textContent = "Copied";
     setTimeout(() => (els.eventsCopyBtn.textContent = "Copy"), 1200);
   } catch {
