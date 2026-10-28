@@ -17,10 +17,12 @@ const SIDE_WIDTH_KEY = "sidePanelWidth";
 const DEFAULT_SIDE_WIDTH = 420;
 const MIN_SIDE_WIDTH = 240;
 const MAX_SIDE_WIDTH = 920;
+const NOTES_WIDTH_KEY = "notesPanelWidth";
+const DEFAULT_NOTES_WIDTH = 360;
 
-const PANE_KEYS = ["pdf", "tree", "chat"];
+const PANE_KEYS = ["pdf", "tree", "chat", "notes"];
 function loadPaneState() {
-  const out = { pdf: true, tree: true, chat: true };
+  const out = { pdf: true, tree: true, chat: true, notes: true };
   try {
     const raw = JSON.parse(localStorage.getItem("paneOpen") || "{}");
     for (const key of PANE_KEYS) if (typeof raw[key] === "boolean") out[key] = raw[key];
@@ -75,8 +77,8 @@ const state = {
   dragStart: null,
   resizingSidePanel: false,
   sidePanelWidth: DEFAULT_SIDE_WIDTH,
+  notesPanelWidth: DEFAULT_NOTES_WIDTH,
   sending: false,
-  activeSideTab: "conversation",
   // The note panel targets either the selected node or, when set, a highlight. noteLoadedKey
   // is `${kind}:${id}` of whatever draft is currently loaded into noteDraft.
   noteHighlightId: null,
@@ -86,8 +88,6 @@ const state = {
   noteDirty: false,
   noteSaving: false,
   noteEditing: false,
-  projectNotes: [],
-  projectNotesProjectId: null,
   // "All notes" block in the Notes tab: every note on the current PDF, with the
   // highlight each one anchors to so a click can jump the viewer there.
   docNotes: [],
@@ -120,7 +120,9 @@ const els = {
   miniMap: document.getElementById("miniMap"),
   emptyState: document.getElementById("emptyState"),
   sideResizeHandle: document.getElementById("sideResizeHandle"),
+  notesResizeHandle: document.getElementById("notesResizeHandle"),
   sidePanel: document.getElementById("sidePanel"),
+  notesPanel: document.getElementById("notesPanel"),
   composer: document.getElementById("composer"),
   promptInput: document.getElementById("promptInput"),
   sendBtn: document.getElementById("sendBtn"),
@@ -128,12 +130,10 @@ const els = {
   threadTarget: document.getElementById("threadTarget"),
   detailTitle: document.getElementById("detailTitle"),
   detailMeta: document.getElementById("detailMeta"),
-  sideTabBtns: document.querySelectorAll("[data-side-tab]"),
   conversationPane: document.getElementById("conversationPane"),
   conversationList: document.getElementById("conversationList"),
   notePane: document.getElementById("notePane"),
   noteStatus: document.getElementById("noteStatus"),
-  noteProjectBtn: document.getElementById("noteProjectBtn"),
   noteEditBtn: document.getElementById("noteEditBtn"),
   noteSaveBtn: document.getElementById("noteSaveBtn"),
   docNotesHost: document.getElementById("docNotesHost"),
@@ -197,6 +197,7 @@ const els = {
   togglePdfBtn: document.getElementById("togglePdfBtn"),
   toggleTreeBtn: document.getElementById("toggleTreeBtn"),
   toggleChatBtn: document.getElementById("toggleChatBtn"),
+  toggleNotesBtn: document.getElementById("toggleNotesBtn"),
 };
 
 function svgEl(name) {
@@ -947,7 +948,6 @@ function render() {
   renderTree();
   renderMiniMap();
   renderConversation();
-  renderSideTabs();
   renderNotePanel();
   renderComposer();
   renderBreadcrumb();
@@ -1215,9 +1215,9 @@ function hideNodePromptPreview() {
 }
 
 function openNodeNote(nodeId) {
-  state.activeSideTab = "notes";
   hideNodePromptPreview();
   selectNode(nodeId);
+  revealNotes();
 }
 
 function makeNodeCard(node) {
@@ -1745,21 +1745,12 @@ async function copyEventsJson() {
   }
 }
 
-function setSideTab(tab) {
-  state.activeSideTab = tab === "notes" ? "notes" : "conversation";
+// Notes are now their own pane (no longer a tab). Reveal it if collapsed and
+// refresh its contents for the current target.
+function revealNotes() {
   hideNoteContextMenu();
-  renderSideTabs();
+  if (!state.paneOpen.notes) setPaneOpen("notes", true);
   renderNotePanel();
-}
-
-function renderSideTabs() {
-  for (const button of els.sideTabBtns) {
-    const active = button.dataset.sideTab === state.activeSideTab;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  }
-  els.conversationPane.hidden = state.activeSideTab !== "conversation";
-  els.notePane.hidden = state.activeSideTab !== "notes";
 }
 
 // The note panel edits either the selected node's note or, when a highlight note is
@@ -1789,8 +1780,6 @@ function ensureNoteDraft() {
   state.noteDraftNodeId = target && target.kind === "node" ? target.id : null;
   state.noteDirty = false;
   state.noteEditing = false;
-  state.projectNotes = [];
-  state.projectNotesProjectId = null;
   if (!target) {
     state.noteDraft = "";
     return;
@@ -1849,7 +1838,7 @@ function jumpToDocNote(item) {
     openHighlightNote(hl);
   } else if (item.node_id && state.nodeById.has(item.node_id)) {
     selectNode(item.node_id); // also reveals the node's source highlight
-    setSideTab("notes");
+    revealNotes();
   }
   // Jump the PDF viewer to where the note was taken. Open the pane first if needed,
   // then defer one frame so the just-shown pane has laid out before we measure.
@@ -1928,38 +1917,6 @@ function renderDocNotesBlock() {
   return details;
 }
 
-function renderProjectNotesSummary() {
-  if (!state.projectNotesProjectId) return null;
-  const wrap = document.createElement("section");
-  wrap.className = "project-notes-summary";
-  const title = document.createElement("h3");
-  title.textContent = "Project notes";
-  wrap.appendChild(title);
-  if (!state.projectNotes.length) {
-    const empty = document.createElement("div");
-    empty.className = "soft-label";
-    empty.textContent = "No notes yet";
-    wrap.appendChild(empty);
-    return wrap;
-  }
-  for (const item of state.projectNotes) {
-    const article = document.createElement("article");
-    article.className = "project-note-item";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "project-note-title";
-    button.textContent = item.title || "Node";
-    button.addEventListener("click", () => {
-      selectNode(item.id);
-      setSideTab("notes");
-    });
-    article.appendChild(button);
-    article.appendChild(renderMarkdown(item.note_md || ""));
-    wrap.appendChild(article);
-  }
-  return wrap;
-}
-
 function renderNotePanel() {
   ensureNoteDraft();
   const target = currentNoteTarget();
@@ -1970,10 +1927,6 @@ function renderNotePanel() {
   els.noteSaveBtn.disabled = disabled || state.noteSaving || !state.noteEditing;
   els.noteEditBtn.hidden = disabled || state.noteEditing;
   els.noteSaveBtn.hidden = disabled || !state.noteEditing;
-  // "Project notes" aggregates a node tree — it has no meaning for a highlight note.
-  els.noteProjectBtn.hidden = isHighlight;
-  els.noteProjectBtn.disabled =
-    isHighlight || !state.selectedProjectId || state.selectedProjectId === "__new__";
   const label = isHighlight ? "Highlight notes" : "Node notes";
   els.noteStatus.textContent = disabled
     ? "say something"
@@ -2017,10 +1970,6 @@ function renderNotePanel() {
         ? "No note yet — click ✎ to add one"
         : "say something";
     rendered.appendChild(empty);
-  }
-  if (!isHighlight) {
-    const projectNotes = renderProjectNotesSummary();
-    if (projectNotes) rendered.appendChild(projectNotes);
   }
   els.noteRendered.replaceChildren(rendered);
 }
@@ -2117,7 +2066,7 @@ function renderThreadTarget() {
   const newThread = document.createElement("button");
   newThread.type = "button";
   newThread.className = "thread-new-btn";
-  newThread.textContent = "+ New thread";
+  newThread.textContent = "+ New tree";
   newThread.title = "Ask an unrelated question as a separate tree instead";
   newThread.addEventListener("click", () => {
     state.parentId = null;
@@ -2542,33 +2491,13 @@ async function saveNote() {
   }
 }
 
-// Open a highlight's note in the side panel (used by click + the highlight menu).
+// Open a highlight's note in the notes pane (used by click + the highlight menu).
 function openHighlightNote(hl) {
   if (!hl) return;
   state.noteHighlightId = hl.id;
   state.activeHighlightId = hl.id;
-  if (!state.paneOpen.chat) setPaneOpen("chat", true);
-  state.activeSideTab = "notes";
-  renderSideTabs();
-  renderNotePanel();
+  revealNotes();
   drawHighlightsForPage(hl.page);
-}
-
-async function readProjectNotes() {
-  const projectId = state.selectedProjectId;
-  if (!projectId || projectId === "__new__") return;
-  const res = await fetch(`/api/projects/${projectId}/notes`);
-  const data = await res.json();
-  if (!res.ok) {
-    window.alert(data.error || "Load failed");
-    return;
-  }
-  state.projectNotes = data.notes || [];
-  state.projectNotesProjectId = projectId;
-  state.noteEditing = false;
-  state.activeSideTab = "notes";
-  renderSideTabs();
-  renderNotePanel();
 }
 
 function cleanMarkdown(value) {
@@ -2752,12 +2681,12 @@ async function appendSelectionToNote() {
     return;
   }
   state.noteHighlightId = null; // the conversation selection belongs to the node
-  state.activeSideTab = "notes";
   state.noteDirty = false;
   state.noteEditing = false;
   state.noteDraftNodeId = data.node.id;
   state.noteDraft = data.node.note_md || "";
   state.noteLoadedKey = `node:${data.node.id}`;
+  revealNotes();
   if (state.docNotesDocId === state.currentDocId) fetchDocNotes({ force: true });
   await fetchTree();
 }
@@ -2862,8 +2791,14 @@ function startSidePanelResize(event) {
 
 function resizeSidePanel(event) {
   if (!state.resizingSidePanel) return;
-  const nextWidth = window.innerWidth - event.clientX;
-  applySidePanelWidth(nextWidth);
+  // The chat pane is no longer the rightmost pane: when the notes pane is open
+  // its handle marks the chat pane's right edge, so measure the width from there
+  // rather than from the window edge.
+  const rightEdge =
+    state.paneOpen.notes && els.notesResizeHandle
+      ? els.notesResizeHandle.getBoundingClientRect().left
+      : window.innerWidth;
+  applySidePanelWidth(rightEdge - event.clientX);
 }
 
 function stopSidePanelResize() {
@@ -2871,6 +2806,41 @@ function stopSidePanelResize() {
   state.resizingSidePanel = false;
   document.body.classList.remove("resizing-side-panel");
   localStorage.setItem(SIDE_WIDTH_KEY, String(Math.round(state.sidePanelWidth)));
+}
+
+function maxNotesPanelWidth() {
+  return Math.max(MIN_SIDE_WIDTH, Math.min(MAX_SIDE_WIDTH, window.innerWidth - 280));
+}
+
+function applyNotesPanelWidth(width) {
+  const safeWidth = clamp(Number(width) || DEFAULT_NOTES_WIDTH, MIN_SIDE_WIDTH, maxNotesPanelWidth());
+  state.notesPanelWidth = safeWidth;
+  document.documentElement.style.setProperty("--notes-panel-width", `${safeWidth}px`);
+  renderMiniMap();
+}
+
+function initNotesPanelWidth() {
+  applyNotesPanelWidth(Number(localStorage.getItem(NOTES_WIDTH_KEY)) || DEFAULT_NOTES_WIDTH);
+}
+
+function startNotesPanelResize(event) {
+  if (!els.notesResizeHandle) return;
+  event.preventDefault();
+  state.resizingNotesPanel = true;
+  document.body.classList.add("resizing-side-panel");
+}
+
+function resizeNotesPanel(event) {
+  if (!state.resizingNotesPanel) return;
+  // Notes is the rightmost pane, so its width runs from the pointer to the window edge.
+  applyNotesPanelWidth(window.innerWidth - event.clientX);
+}
+
+function stopNotesPanelResize() {
+  if (!state.resizingNotesPanel) return;
+  state.resizingNotesPanel = false;
+  document.body.classList.remove("resizing-side-panel");
+  localStorage.setItem(NOTES_WIDTH_KEY, String(Math.round(state.notesPanelWidth)));
 }
 
 function pollIfNeeded() {
@@ -3473,8 +3443,8 @@ function setPaneOpen(pane, open) {
 }
 
 function renderPanes() {
-  const map = { pdf: els.pdfPane, tree: els.treePane, chat: els.sidePanel };
-  const toggles = { pdf: els.togglePdfBtn, tree: els.toggleTreeBtn, chat: els.toggleChatBtn };
+  const map = { pdf: els.pdfPane, tree: els.treePane, chat: els.sidePanel, notes: els.notesPanel };
+  const toggles = { pdf: els.togglePdfBtn, tree: els.toggleTreeBtn, chat: els.toggleChatBtn, notes: els.toggleNotesBtn };
   for (const key of PANE_KEYS) {
     const open = state.paneOpen[key];
     if (map[key]) map[key].classList.toggle("collapsed", !open);
@@ -3484,7 +3454,12 @@ function renderPanes() {
   // neighbouring panes are collapsed to rails, dragging it widens the PDF into
   // the free space to its right.
   if (els.pdfResizeHandle) els.pdfResizeHandle.style.display = state.paneOpen.pdf ? "" : "none";
+  // The chat↔notes handle needs the chat pane open and a left neighbour to pull
+  // from; the tree↔chat handle needs the chat pane and one of its left neighbours.
   if (els.sideResizeHandle) els.sideResizeHandle.style.display = state.paneOpen.chat && (state.paneOpen.tree || state.paneOpen.pdf) ? "" : "none";
+  if (els.notesResizeHandle)
+    els.notesResizeHandle.style.display =
+      state.paneOpen.notes && (state.paneOpen.chat || state.paneOpen.tree || state.paneOpen.pdf) ? "" : "none";
 }
 
 function initPdfPaneWidth() {
@@ -3575,9 +3550,6 @@ async function uploadPdf(file) {
 
 function wireEvents() {
   els.composer.addEventListener("submit", sendPrompt);
-  for (const button of els.sideTabBtns) {
-    button.addEventListener("click", () => setSideTab(button.dataset.sideTab));
-  }
   els.noteEditor.addEventListener("input", () => {
     const target = currentNoteTarget();
     state.noteDraft = els.noteEditor.value;
@@ -3595,7 +3567,6 @@ function wireEvents() {
     els.noteEditor.focus();
   });
   els.noteSaveBtn.addEventListener("click", saveNote);
-  els.noteProjectBtn.addEventListener("click", readProjectNotes);
   els.conversationList.addEventListener("contextmenu", (event) => {
     const text = selectedConversationMarkdown();
     if (!text || !selectedNode()) return;
@@ -3611,6 +3582,9 @@ function wireEvents() {
   els.sideResizeHandle.addEventListener("pointerdown", startSidePanelResize);
   window.addEventListener("pointermove", resizeSidePanel);
   window.addEventListener("pointerup", stopSidePanelResize);
+  if (els.notesResizeHandle) els.notesResizeHandle.addEventListener("pointerdown", startNotesPanelResize);
+  window.addEventListener("pointermove", resizeNotesPanel);
+  window.addEventListener("pointerup", stopNotesPanelResize);
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       hideSelectionToolbar();
@@ -3619,7 +3593,7 @@ function wireEvents() {
       hideNodeNotePreviewImmediate();
       hideNodePromptPreview();
     }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && state.activeSideTab === "notes") {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && state.paneOpen.notes && currentNoteTarget()) {
       event.preventDefault();
       saveNote();
     }
@@ -3783,6 +3757,7 @@ function wireEvents() {
   els.togglePdfBtn.addEventListener("click", () => setPaneOpen("pdf", !state.paneOpen.pdf));
   els.toggleTreeBtn.addEventListener("click", () => setPaneOpen("tree", !state.paneOpen.tree));
   els.toggleChatBtn.addEventListener("click", () => setPaneOpen("chat", !state.paneOpen.chat));
+  els.toggleNotesBtn.addEventListener("click", () => setPaneOpen("notes", !state.paneOpen.notes));
   document.querySelectorAll(".pane-collapse").forEach((btn) => {
     btn.addEventListener("click", () => setPaneOpen(btn.dataset.pane, false));
   });
@@ -3909,6 +3884,7 @@ function wireEvents() {
 }
 
 initSidePanelWidth();
+initNotesPanelWidth();
 initPdfPaneWidth();
 applyPdfChrome();
 applyTopbarFold();

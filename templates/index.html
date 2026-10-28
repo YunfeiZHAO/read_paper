@@ -23,6 +23,7 @@
             <button id="togglePdfBtn" class="pane-toggle active" type="button" title="PDF pane">PDF</button>
             <button id="toggleTreeBtn" class="pane-toggle active" type="button" title="Question tree pane">Tree</button>
             <button id="toggleChatBtn" class="pane-toggle active" type="button" title="Conversation pane">Chat</button>
+            <button id="toggleNotesBtn" class="pane-toggle active" type="button" title="Notes pane">Notes</button>
           </div>
           <div class="direction-toggle reader-only" aria-label="Tree direction">
             <button class="active" data-direction="down" type="button">Down</button>
@@ -158,10 +159,6 @@
                 </div>
               </div>
               <div id="detailMeta" class="detail-meta"></div>
-              <div class="side-tabs" aria-label="Sidebar">
-                <button class="active" data-side-tab="conversation" type="button">Conversation</button>
-                <button data-side-tab="notes" type="button">Notes</button>
-              </div>
             </section>
 
             <section id="conversationPane" class="side-tab-panel conversation-pane">
@@ -186,16 +183,29 @@
                 </div>
               </form>
             </section>
+          </div>
+        </aside>
 
-            <section id="notePane" class="side-tab-panel note-pane" hidden>
+        <div id="notesResizeHandle" class="side-resize-handle pane-resize-handle" role="separator" aria-orientation="vertical" title="Drag to resize the notes pane"></div>
+
+        <!-- ── Notes pane ─────────────────────────────────────────── -->
+        <aside id="notesPanel" class="pane notes-panel">
+          <div class="pane-rail" data-pane="notes">
+            <button class="pane-rail-btn" type="button" title="Expand notes">Notes</button>
+          </div>
+          <div class="pane-inner">
+            <div class="pane-heading note-heading">
+              <h2>Notes</h2>
+              <div class="panel-actions">
+                <button id="noteEditBtn" class="icon-button" type="button" title="Edit notes">✎</button>
+                <button id="noteSaveBtn" class="icon-button" type="button" title="Save notes" hidden>✓</button>
+                <button class="icon-button pane-collapse" type="button" data-pane="notes" title="Collapse notes pane">›</button>
+              </div>
+            </div>
+            <section id="notePane" class="note-pane">
               <div id="docNotesHost" class="doc-notes-host" hidden></div>
               <div class="note-toolbar">
                 <span id="noteStatus" class="note-status">Node notes</span>
-                <div class="panel-actions">
-                  <button id="noteProjectBtn" class="icon-button" type="button" title="Read notes from all nodes of the current PDF">☷</button>
-                  <button id="noteEditBtn" class="icon-button" type="button" title="Edit notes">✎</button>
-                  <button id="noteSaveBtn" class="icon-button" type="button" title="Save notes" hidden>✓</button>
-                </div>
               </div>
               <div id="noteBox" class="note-box">
                 <textarea id="noteEditor" rows="8" placeholder="Notes" hidden></textarea>

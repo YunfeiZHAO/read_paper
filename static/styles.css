@@ -379,20 +379,20 @@ pre {
 
 .edge {
   fill: none;
-  stroke: var(--edge-color, #9aa7a5);
+  stroke: var(--edge-color, #7d8b89);
   stroke-linecap: round;
-  stroke-width: 2.2px;
-  opacity: 0.62;
+  stroke-width: 3.2px;
+  opacity: 0.9;
   transition: opacity 150ms ease, stroke-width 150ms ease;
 }
 
 .edge.dimmed {
-  opacity: 0.16;
+  opacity: 0.4;
 }
 
 .edge.active {
   opacity: 1;
-  stroke-width: 3px;
+  stroke-width: 4.2px;
 }
 
 .node-card {
@@ -449,11 +449,13 @@ pre {
 
 .node-card.selected {
   border-color: color-mix(in srgb, var(--node-color, var(--accent)) 60%, #202124);
-  outline: 3px solid color-mix(in srgb, var(--node-color, var(--accent)) 18%, transparent);
+  outline: 3px solid color-mix(in srgb, var(--node-color, var(--accent)) 45%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--node-color, var(--accent)) 14%, transparent), var(--shadow);
 }
 
+/* Non-selected nodes keep full opacity so their text stays readable; the
+   selected node is distinguished by its outline/ring block instead. */
 .node-card.dimmed {
-  opacity: 0.38;
   box-shadow: 0 8px 20px rgba(31, 41, 55, 0.06);
 }
 
@@ -1267,6 +1269,8 @@ button.meta-pill {
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   padding: 12px;
+  min-height: 0;
+  overflow: hidden;
   background: #fbfaf7;
 }
 
@@ -1332,42 +1336,6 @@ button.meta-pill {
   min-height: 100%;
 }
 
-.project-notes-summary {
-  display: grid;
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
-
-.project-notes-summary h3 {
-  margin: 0;
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.project-note-item {
-  display: grid;
-  gap: 7px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: #fbfaf7;
-}
-
-.project-note-title {
-  width: fit-content;
-  max-width: 100%;
-  overflow: hidden;
-  background: transparent;
-  color: var(--blue);
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 17px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .doc-notes {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1402,8 +1370,23 @@ button.meta-pill {
 
 .doc-notes-body {
   display: grid;
-  gap: 8px;
-  padding: 2px 10px 10px;
+  gap: 6px;
+  padding: 2px 7px 8px;
+  /* Cap the list height so a long list scrolls inside its own box instead of
+     pushing the note editor below the fold. */
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.doc-notes-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.doc-notes-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line-strong, #cfcabb);
 }
 
 /* The explicit display:grid above would otherwise override the UA's default of
@@ -1414,8 +1397,8 @@ button.meta-pill {
 
 .doc-note-item {
   display: grid;
-  gap: 6px;
-  padding: 9px 10px;
+  gap: 5px;
+  padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #fff;
@@ -1424,8 +1407,9 @@ button.meta-pill {
 .doc-note-title {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
+  min-width: 0;
   background: transparent;
   text-align: left;
   cursor: pointer;
@@ -1445,8 +1429,8 @@ button.meta-pill {
 
 .doc-note-kind {
   flex: 0 0 auto;
-  min-width: 26px;
-  padding: 1px 6px;
+  min-width: 20px;
+  padding: 1px 5px;
   border-radius: 999px;
   background: var(--line);
   color: var(--muted, #6b6655);
@@ -1488,6 +1472,7 @@ button.meta-pill {
 }
 
 .doc-note-label {
+  min-width: 0;
   overflow: hidden;
   color: var(--blue);
   font-size: 12px;
@@ -2120,10 +2105,11 @@ button.meta-pill {
   }
 
   .side-resize-handle {
-    display: none;
+    display: none !important;
   }
 
-  .side-panel {
+  .side-panel,
+  .notes-panel {
     position: fixed;
     right: 0;
     top: 56px;
@@ -2131,6 +2117,15 @@ button.meta-pill {
     width: min(92vw, 392px);
     border-left: 1px solid var(--line);
     box-shadow: -14px 0 40px rgba(31, 41, 55, 0.12);
+  }
+
+  /* Stack the two right-hand overlays so both stay reachable on small screens. */
+  .notes-panel {
+    right: auto;
+    left: 0;
+    border-left: none;
+    border-right: 1px solid var(--line);
+    box-shadow: 14px 0 40px rgba(31, 41, 55, 0.12);
   }
 }
 
@@ -2187,6 +2182,7 @@ button.meta-pill {
 .pdf-pane { flex: 0 0 auto; flex-basis: 560px; background: #e9e8e3; border-right: 1px solid var(--line); }
 .canvas-column.pane { flex: 1 1 0; min-width: 160px; }
 .side-panel.pane { flex: 0 0 var(--side-panel-width, 420px); }
+.notes-panel.pane { flex: 0 0 var(--notes-panel-width, 360px); }
 
 /* When the tree pane (the usual space-filler) is collapsed, let the chat
    pane grow to absorb the free space so it always reaches the right edge. */
@@ -2194,9 +2190,14 @@ button.meta-pill {
   flex: 1 1 var(--side-panel-width, 420px);
 }
 
-/* When both neighbouring panes are collapsed to rails, let the PDF pane grow
+/* With the tree and chat both collapsed, the notes pane becomes the filler. */
+#treePane.collapsed ~ .side-panel.collapsed ~ .notes-panel.pane:not(.collapsed) {
+  flex: 1 1 var(--notes-panel-width, 360px);
+}
+
+/* When every pane to its right is collapsed to a rail, let the PDF pane grow
    to fill the whole row instead of staying at its fixed width. */
-.pdf-pane.pane:not(.collapsed):has(~ #treePane.collapsed):has(~ .side-panel.collapsed) {
+.pdf-pane.pane:not(.collapsed):has(~ #treePane.collapsed):has(~ .side-panel.collapsed):has(~ .notes-panel.collapsed) {
   flex: 1 1 auto !important;
 }
 
@@ -2226,11 +2227,13 @@ button.meta-pill {
 /* Pane inner grid: header (auto) + body (1fr) */
 .pdf-pane .pane-inner,
 .canvas-column .pane-inner,
-.side-panel .pane-inner {
+.side-panel .pane-inner,
+.notes-panel .pane-inner {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
 }
-.side-panel.pane { display: flex; }
+.side-panel.pane,
+.notes-panel.pane { display: flex; }
 
 .pane-heading {
   display: flex;
