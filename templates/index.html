@@ -29,8 +29,10 @@
             <button data-direction="right" type="button">Right</button>
           </div>
           <button id="refreshBtn" class="icon-button" type="button" title="Refresh">↻</button>
+          <button id="topbarFoldBtn" class="icon-button reader-only" type="button" title="Hide top bar for more space">⌃</button>
         </div>
       </header>
+      <button id="topbarRestore" class="topbar-restore" type="button" title="Show top bar">⌄</button>
 
       <!-- Shared hidden PDF file input, triggered from the workspace screen and the reader empty state. -->
       <input id="docUploadInput" type="file" accept="application/pdf,.pdf" hidden />
@@ -78,10 +80,12 @@
                 <button id="pdfLayoutBtn" class="icon-button" type="button" title="Switch to side-by-side pages">⇆</button>
                 <button id="pdfZoomOutBtn" class="icon-button" type="button" title="Zoom out">−</button>
                 <button id="pdfZoomInBtn" class="icon-button" type="button" title="Zoom in">+</button>
+                <button id="pdfChromeToggle" class="icon-button" type="button" title="Hide toolbar for more reading space">⌃</button>
                 <button class="icon-button pane-collapse" type="button" data-pane="pdf" title="Collapse PDF pane">‹</button>
               </div>
             </div>
             <div class="pdf-body">
+              <button id="pdfChromeRestore" class="pdf-chrome-restore" type="button" title="Show toolbar">⌄</button>
               <div id="pdfViewport" class="pdf-viewport">
                 <div id="pdfPages" class="pdf-pages"></div>
                 <div id="pdfEmpty" class="pdf-empty">

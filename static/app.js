@@ -46,6 +46,8 @@ const state = {
   pdfScale: Number(localStorage.getItem("pdfScale")) || 1.3,
   pdfHorizontal: localStorage.getItem("pdfHorizontal") === "1",
   pdfMinimapOpen: localStorage.getItem("pdfMinimapOpen") === "1",
+  pdfChromeHidden: localStorage.getItem("pdfChromeHidden") === "1",
+  topbarFolded: localStorage.getItem("topbarFolded") === "1",
   pdfRenderToken: 0,
   pdfPageViewports: new Map(),
   highlights: [],
@@ -162,6 +164,11 @@ const els = {
   pdfLayoutBtn: document.getElementById("pdfLayoutBtn"),
   pdfMinimap: document.getElementById("pdfMinimap"),
   pdfMinimapBtn: document.getElementById("pdfMinimapBtn"),
+  pdfChromeToggle: document.getElementById("pdfChromeToggle"),
+  pdfChromeRestore: document.getElementById("pdfChromeRestore"),
+  appShell: document.querySelector(".app-shell"),
+  topbarFoldBtn: document.getElementById("topbarFoldBtn"),
+  topbarRestore: document.getElementById("topbarRestore"),
   treePane: document.getElementById("treePane"),
   selectionToolbar: document.getElementById("selectionToolbar"),
   selHighlightBtn: document.getElementById("selHighlightBtn"),
@@ -3087,14 +3094,16 @@ function renderPanes() {
     if (map[key]) map[key].classList.toggle("collapsed", !open);
     if (toggles[key]) toggles[key].classList.toggle("active", open);
   }
-  // The side resize handles only make sense when both adjacent panes are open.
-  if (els.pdfResizeHandle) els.pdfResizeHandle.style.display = state.paneOpen.pdf && state.paneOpen.tree ? "" : "none";
+  // Keep the PDF handle available whenever the PDF pane is open: when the
+  // neighbouring panes are collapsed to rails, dragging it widens the PDF into
+  // the free space to its right.
+  if (els.pdfResizeHandle) els.pdfResizeHandle.style.display = state.paneOpen.pdf ? "" : "none";
   if (els.sideResizeHandle) els.sideResizeHandle.style.display = state.paneOpen.chat && (state.paneOpen.tree || state.paneOpen.pdf) ? "" : "none";
 }
 
 function initPdfPaneWidth() {
   const stored = Number(localStorage.getItem("pdfPaneWidth"));
-  if (stored && els.pdfPane) els.pdfPane.style.flexBasis = `${clamp(stored, 320, 1200)}px`;
+  if (stored && els.pdfPane) els.pdfPane.style.flexBasis = `${clamp(stored, 320, 2400)}px`;
 }
 
 let resizingPdf = false;
@@ -3105,7 +3114,11 @@ function startPdfResize(event) {
 function movePdfResize(event) {
   if (!resizingPdf || !els.pdfPane) return;
   const left = els.pdfPane.getBoundingClientRect().left;
-  const width = clamp(event.clientX - left, 320, 1200);
+  // Allow the PDF pane to grow across (almost) the whole row so it can expand
+  // into the space freed when the tree/chat panes are collapsed to rails.
+  const parent = els.pdfPane.parentElement;
+  const maxWidth = parent ? Math.max(320, parent.getBoundingClientRect().right - left - 80) : 1200;
+  const width = clamp(event.clientX - left, 320, maxWidth);
   els.pdfPane.style.flexBasis = `${width}px`;
 }
 function stopPdfResize() {
@@ -3116,6 +3129,38 @@ function stopPdfResize() {
     localStorage.setItem("pdfPaneWidth", String(Math.round(width)));
   }
   renderMiniMap();
+}
+
+function applyPdfChrome() {
+  if (els.pdfPane) els.pdfPane.classList.toggle("chrome-hidden", state.pdfChromeHidden);
+  if (els.pdfChromeToggle) {
+    els.pdfChromeToggle.title = state.pdfChromeHidden
+      ? "Show toolbar"
+      : "Hide toolbar for more reading space";
+  }
+}
+
+function setPdfChromeHidden(hidden) {
+  state.pdfChromeHidden = hidden;
+  try {
+    localStorage.setItem("pdfChromeHidden", hidden ? "1" : "0");
+  } catch {}
+  applyPdfChrome();
+}
+
+function applyTopbarFold() {
+  if (els.appShell) els.appShell.classList.toggle("topbar-folded", state.topbarFolded);
+  if (els.topbarFoldBtn) {
+    els.topbarFoldBtn.title = state.topbarFolded ? "Show top bar" : "Hide top bar for more space";
+  }
+}
+
+function setTopbarFolded(folded) {
+  state.topbarFolded = folded;
+  try {
+    localStorage.setItem("topbarFolded", folded ? "1" : "0");
+  } catch {}
+  applyTopbarFold();
 }
 
 async function uploadPdf(file) {
@@ -3277,6 +3322,10 @@ function wireEvents() {
   els.pdfZoomOutBtn.addEventListener("click", () => setPdfScale(state.pdfScale / 1.15));
   if (els.pdfLayoutBtn) els.pdfLayoutBtn.addEventListener("click", togglePdfLayout);
   if (els.pdfMinimapBtn) els.pdfMinimapBtn.addEventListener("click", toggleMinimap);
+  if (els.pdfChromeToggle) els.pdfChromeToggle.addEventListener("click", () => setPdfChromeHidden(true));
+  if (els.pdfChromeRestore) els.pdfChromeRestore.addEventListener("click", () => setPdfChromeHidden(false));
+  if (els.topbarFoldBtn) els.topbarFoldBtn.addEventListener("click", () => setTopbarFolded(true));
+  if (els.topbarRestore) els.topbarRestore.addEventListener("click", () => setTopbarFolded(false));
   if (els.pdfViewport) {
     let minimapRaf = 0;
     els.pdfViewport.addEventListener("scroll", () => {
@@ -3463,6 +3512,8 @@ function wireEvents() {
 
 initSidePanelWidth();
 initPdfPaneWidth();
+applyPdfChrome();
+applyTopbarFold();
 wireEvents();
 renderPanes();
 
