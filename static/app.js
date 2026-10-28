@@ -1983,7 +1983,7 @@ function renderNotePanel() {
         ? `${label} unsaved`
         : state.noteEditing
           ? "Editing notes"
-          : label;
+          : "";
   if (els.noteEditor.value !== state.noteDraft) {
     els.noteEditor.value = state.noteDraft;
   }
