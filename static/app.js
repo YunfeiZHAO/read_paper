@@ -1341,6 +1341,9 @@ function applyTransform() {
 
 const MIN_K = 0.05;
 const MAX_K = 2.4;
+// Zoom the default tree view settles on: cards render at full size so their
+// question text and note previews are comfortably readable.
+const DEFAULT_TREE_K = 1;
 
 function zoomAt(factor, clientX, clientY) {
   const rect = els.treeSvg.getBoundingClientRect();
@@ -1376,13 +1379,29 @@ function focusSelected() {
   fitTreeToView();
 }
 
+// Default view when opening a PDF or after adding/removing a node: center the
+// selected node at a readable zoom rather than fitting the whole tree. Fitting
+// the whole tree shrinks the scale below 1 once there are more than a couple of
+// nodes, which makes each card and its note preview too small to read. Falls
+// back to a whole-tree fit when nothing is selected.
+function focusDefault() {
+  const id = state.selectedId;
+  if (id && state.layout.has(id)) {
+    centerOnNode(id, { forceK: DEFAULT_TREE_K });
+  } else {
+    fitTreeToView();
+  }
+}
+
 // Pan (and zoom in if the tree is far out) so a single node sits centered in
-// the view. Used when jumping to a node from its linked PDF highlight.
-function centerOnNode(id, { minK = 0.8 } = {}) {
+// the view. Used when jumping to a node from its linked PDF highlight and for
+// the default view (with forceK, which pins the zoom regardless of the current
+// scale instead of only zooming in from it).
+function centerOnNode(id, { minK = 0.8, forceK = null } = {}) {
   const pos = state.layout.get(id);
   if (!pos) return;
   const rect = els.canvasHost.getBoundingClientRect();
-  const targetK = clamp(Math.max(state.transform.k, minK), MIN_K, MAX_K);
+  const targetK = clamp(forceK != null ? forceK : Math.max(state.transform.k, minK), MIN_K, MAX_K);
   state.transform.k = targetK;
   state.transform.x = rect.width / 2 - (pos.x + NODE_W / 2) * targetK;
   state.transform.y = rect.height / 2 - (pos.y + NODE_H / 2) * targetK;
@@ -2424,7 +2443,7 @@ async function sendPrompt(event) {
     els.promptInput.value = "";
     state.scrollConversationToLatest = true;
     await Promise.all([fetchTree(), fetchHighlights()]);
-    focusSelected();
+    focusDefault();
   } catch (err) {
     window.alert(err.message);
   } finally {
@@ -2741,7 +2760,7 @@ async function deleteSelected() {
   }
   localStorage.setItem("selectedProjectId", state.selectedProjectId);
   await fetchTree();
-  focusSelected();
+  focusDefault();
   // Deleting a node clears the back-link on any highlight it was asked from, so
   // refresh highlights to drop the now-stale "has-node" marker.
   await fetchHighlights();
@@ -3857,7 +3876,7 @@ renderPanes();
       }
     }
     await applyRoute();
-    if (state.view === "reader" && state.nodes.length) focusSelected();
+    if (state.view === "reader" && state.nodes.length) focusDefault();
   } catch (err) {
     console.error(err);
     navigate("home");

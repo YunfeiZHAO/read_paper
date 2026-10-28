@@ -1539,6 +1539,111 @@ button.meta-pill {
   line-height: 18px;
 }
 
+.bubble-events-btn {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+}
+
+.bubble-events-btn:hover {
+  color: var(--text);
+  border-color: var(--blue);
+}
+
+.bubble-label {
+  display: flex;
+  align-items: center;
+}
+
+.events-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.events-modal[hidden] {
+  display: none;
+}
+
+.events-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.events-modal-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(820px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  background: var(--panel, #fffdfa);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.events-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.events-modal-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.events-modal-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.events-modal-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.events-modal-btn:hover {
+  border-color: var(--blue);
+}
+
+.events-modal-btn.primary {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+.events-modal-body {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--text);
+  white-space: pre;
+}
+
 @keyframes agentPulse {
   0%,
   100% {
