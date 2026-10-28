@@ -54,7 +54,7 @@ const state = {
   parentId: null,
   fileIds: new Set(),
   workspaceRefs: [],
-  selectedBackend: localStorage.getItem("askBackend") === "claude" ? "claude" : "codex",
+  selectedBackend: localStorage.getItem("askBackend") === "codex" ? "codex" : "claude",
   enableWebSearch: localStorage.getItem("askWebSearch") === "on",
   layout: new Map(),
   nodeById: new Map(),
@@ -1405,6 +1405,7 @@ function selectNode(id) {
   state.parentId = id;
   render();
   fetchWorkspaceFiles().catch(console.error);
+  revealNodeSourceHighlight(state.nodeById.get(id));
 }
 
 function setParent(id) {
@@ -1591,7 +1592,7 @@ function toolCallsForNode(node) {
   return [...calls.values()];
 }
 
-function renderToolCalls(tools) {
+function renderToolCalls(tools, active = false) {
   if (!tools.length) return null;
   const list = document.createElement("div");
   list.className = "tool-list";
@@ -1628,7 +1629,21 @@ function renderToolCalls(tools) {
     row.append(spinner, text);
     list.appendChild(row);
   }
-  return list;
+  // Fold the tool/reasoning activity into a disclosure so the final answer
+  // stays the prominent message. Keep it open while the node is still running
+  // (so live tool activity is visible), collapsed once it has finished.
+  const details = document.createElement("details");
+  details.className = "tool-disclosure";
+  if (active) details.open = true;
+  const summary = document.createElement("summary");
+  summary.className = "tool-disclosure-summary";
+  const running = tools.filter((t) => t.status !== "completed").length;
+  const label = running
+    ? `Tools & reasoning · ${running} running`
+    : `Tools & reasoning · ${tools.length}`;
+  summary.innerHTML = `<span class="tool-disclosure-caret" aria-hidden="true"></span><span class="tool-disclosure-label">${label}</span>`;
+  details.append(summary, list);
+  return details;
 }
 
 function makeTypingIndicator() {
@@ -1667,7 +1682,7 @@ function makeBubble(role, text, meta = "", tools = [], active = false, attachmen
   const label = document.createElement("div");
   label.className = "bubble-label";
   label.textContent = role === "user" ? "User" : "Agent";
-  const toolList = role === "agent" ? renderToolCalls(tools) : null;
+  const toolList = role === "agent" ? renderToolCalls(tools, active) : null;
   bubble.appendChild(label);
   if (toolList) bubble.appendChild(toolList);
   if (role === "agent") {
@@ -2819,6 +2834,32 @@ function drawHighlightsForPage(page) {
 
 function highlightById(id) {
   return state.highlights.find((h) => h.id === id) || null;
+}
+
+// Scroll the PDF viewer so a highlight's first rect is centered, mark it active,
+// and briefly flash it. Used when selecting a node that was asked from a quote.
+function scrollToHighlight(hl) {
+  if (!hl || !els.pdfViewport || !els.pdfPages) return;
+  const pageEl = els.pdfPages.querySelector(`.pdf-page[data-page="${hl.page}"]`);
+  if (!pageEl) return;
+  state.activeHighlightId = hl.id;
+  drawHighlightsForPage(hl.page);
+  const rect = (hl.rects || [])[0];
+  const viewport = els.pdfViewport;
+  // pageEl.offsetTop is relative to #pdfPages, which sits inside #pdfViewport.
+  const rectTop = pageEl.offsetTop + (rect ? rect.y * pageEl.clientHeight : 0);
+  const target = rectTop - viewport.clientHeight / 2 + (rect ? (rect.h * pageEl.clientHeight) / 2 : 0);
+  viewport.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+}
+
+// When a node is linked to a source highlight, reveal and jump to that quote.
+function revealNodeSourceHighlight(node) {
+  if (!node || !node.source_highlight_id) return;
+  const hl = highlightById(node.source_highlight_id);
+  if (!hl) return;
+  if (!state.paneOpen.pdf) setPaneOpen("pdf", true);
+  // Defer so a just-opened PDF pane has laid out before we measure/scroll.
+  requestAnimationFrame(() => scrollToHighlight(hl));
 }
 
 function onHighlightClick(event) {

@@ -1407,12 +1407,51 @@ button.meta-pill {
   }
 }
 
-.tool-list {
-  display: grid;
-  gap: 7px;
+.tool-disclosure {
   margin: 8px 0 9px;
   padding-top: 8px;
   border-top: 1px solid rgba(32, 33, 36, 0.1);
+}
+
+.tool-disclosure-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.tool-disclosure-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-disclosure-caret {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform 0.12s ease;
+}
+
+.tool-disclosure[open] > .tool-disclosure-summary .tool-disclosure-caret {
+  transform: rotate(90deg);
+}
+
+.tool-disclosure-summary:hover {
+  color: var(--text);
+}
+
+.tool-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
 }
 
 .tool-call {

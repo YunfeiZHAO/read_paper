@@ -103,7 +103,7 @@ async def api_ask(request: Request) -> JSONResponse:
     if not isinstance(workspace_refs_payload, list):
         raise HTTPException(status_code=400, detail="workspace_refs must be an array")
     workspace_refs = normalize_workspace_refs(workspace_refs_payload)
-    backend = str(payload.get("backend") or "codex").strip() or "codex"
+    backend = str(payload.get("backend") or "claude").strip() or "claude"
     if backend not in BACKENDS:
         raise HTTPException(status_code=400, detail=f"backend must be one of {sorted(BACKENDS)}")
     enable_web_search = payload.get("enable_web_search")
