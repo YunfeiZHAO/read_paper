@@ -96,6 +96,7 @@ const state = {
   docNotesOpen: localStorage.getItem("docNotesOpen") === "1",
   noteContextText: "",
   scrollConversationToLatest: false,
+  scrollConversationToNode: null, // node id whose question bubble the conversation should jump to
   // Root node id whose subtree the "project notes" summary aggregates (null = none yet).
   selectedProjectId: null,
   // Files the AI touched under the workspace scratch dir, for the current node's side tab.
@@ -1323,6 +1324,7 @@ function selectNode(id) {
   state.noteHighlightId = null; // choosing a node exits highlight-note mode
   state.selectedId = id;
   state.parentId = id;
+  state.scrollConversationToNode = id; // jump to this node's question in the conversation
   render();
   fetchWorkspaceFiles().catch(console.error);
   revealNodeSourceHighlight(state.nodeById.get(id));
@@ -2022,13 +2024,20 @@ function renderConversation() {
 
   const bubbles = [];
   for (const item of selectedConversationPath()) {
-    bubbles.push(makeBubble("user", item.prompt, item.created_at || "", [], false, item.attachments || [], item.workspace_refs || []));
+    const userBubble = makeBubble("user", item.prompt, item.created_at || "", [], false, item.attachments || [], item.workspace_refs || []);
+    userBubble.dataset.nodeId = item.id; // anchor for jumping to where this node's question started
+    bubbles.push(userBubble);
     const active = isNodeActive(item);
     const agentText = item.answer || item.error || (active ? "Working…" : item.status === "done" ? "" : statusText(item.status));
     bubbles.push(makeBubble("agent", agentText, item.completed_at || item.updated_at || "", toolCallsForNode(item), active, [], [], item));
   }
   els.conversationList.replaceChildren(...bubbles);
-  if (state.scrollConversationToLatest) {
+  if (state.scrollConversationToNode) {
+    const target = els.conversationList.querySelector(`[data-node-id="${state.scrollConversationToNode}"]`);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    state.scrollConversationToNode = null;
+    state.scrollConversationToLatest = false; // an explicit node jump overrides the scroll-to-bottom
+  } else if (state.scrollConversationToLatest) {
     els.conversationList.scrollTop = els.conversationList.scrollHeight;
     state.scrollConversationToLatest = false;
   }
