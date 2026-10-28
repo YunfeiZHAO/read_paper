@@ -1339,6 +1339,20 @@ function focusSelected() {
   fitTreeToView();
 }
 
+// Pan (and zoom in if the tree is far out) so a single node sits centered in
+// the view. Used when jumping to a node from its linked PDF highlight.
+function centerOnNode(id, { minK = 0.8 } = {}) {
+  const pos = state.layout.get(id);
+  if (!pos) return;
+  const rect = els.canvasHost.getBoundingClientRect();
+  const targetK = clamp(Math.max(state.transform.k, minK), MIN_K, MAX_K);
+  state.transform.k = targetK;
+  state.transform.x = rect.width / 2 - (pos.x + NODE_W / 2) * targetK;
+  state.transform.y = rect.height / 2 - (pos.y + NODE_H / 2) * targetK;
+  applyTransform();
+  renderMiniMap();
+}
+
 function treeBounds() {
   if (!state.layout.size) return { x: 0, y: 0, w: NODE_W, h: NODE_H };
   const xs = [];
@@ -2872,7 +2886,7 @@ function onHighlightClick(event) {
   if (hl.node_id && state.nodeById.has(hl.node_id)) {
     if (!state.paneOpen.tree) setPaneOpen("tree", true);
     selectNode(hl.node_id);
-    focusSelected();
+    requestAnimationFrame(() => centerOnNode(hl.node_id));
   } else {
     // A highlight with no question node: open (or start) its note in the side panel.
     openHighlightNote(hl);
@@ -3174,7 +3188,7 @@ function wireEvents() {
       if (hl && hl.node_id && state.nodeById.has(hl.node_id)) {
         if (!state.paneOpen.tree) setPaneOpen("tree", true);
         selectNode(hl.node_id);
-        focusSelected();
+        requestAnimationFrame(() => centerOnNode(hl.node_id));
       }
     });
   }
