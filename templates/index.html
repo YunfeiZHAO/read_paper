@@ -74,19 +74,24 @@
               <h2>PDF</h2>
               <div class="panel-actions">
                 <span id="pdfPageInfo" class="pdf-page-info"></span>
+                <button id="pdfMinimapBtn" class="icon-button" type="button" title="Show page minimap">▤</button>
+                <button id="pdfLayoutBtn" class="icon-button" type="button" title="Switch to side-by-side pages">⇆</button>
                 <button id="pdfZoomOutBtn" class="icon-button" type="button" title="Zoom out">−</button>
                 <button id="pdfZoomInBtn" class="icon-button" type="button" title="Zoom in">+</button>
                 <button class="icon-button pane-collapse" type="button" data-pane="pdf" title="Collapse PDF pane">‹</button>
               </div>
             </div>
-            <div id="pdfViewport" class="pdf-viewport">
-              <div id="pdfPages" class="pdf-pages"></div>
-              <div id="pdfEmpty" class="pdf-empty">
-                <div class="pdf-empty-inner">
-                  <p>Upload a PDF to start reading</p>
-                  <button id="pdfEmptyUploadBtn" type="button">+ Upload PDF</button>
+            <div class="pdf-body">
+              <div id="pdfViewport" class="pdf-viewport">
+                <div id="pdfPages" class="pdf-pages"></div>
+                <div id="pdfEmpty" class="pdf-empty">
+                  <div class="pdf-empty-inner">
+                    <p>Upload a PDF to start reading</p>
+                    <button id="pdfEmptyUploadBtn" type="button">+ Upload PDF</button>
+                  </div>
                 </div>
               </div>
+              <div id="pdfMinimap" class="pdf-minimap" hidden aria-label="Page minimap"></div>
             </div>
           </div>
         </section>

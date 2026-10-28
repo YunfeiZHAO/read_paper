@@ -265,6 +265,12 @@ pre {
   transform: translateY(1px);
 }
 
+.icon-button.active {
+  border-color: var(--blue, #3a6ea5);
+  background: rgba(58, 110, 165, 0.12);
+  color: var(--blue, #3a6ea5);
+}
+
 .danger-button {
   color: var(--red);
 }
@@ -1897,6 +1903,12 @@ button.meta-pill {
 .canvas-column.pane { flex: 1 1 0; min-width: 160px; }
 .side-panel.pane { flex: 0 0 var(--side-panel-width, 420px); }
 
+/* When the tree pane (the usual space-filler) is collapsed, let the chat
+   pane grow to absorb the free space so it always reaches the right edge. */
+#treePane.collapsed ~ .side-panel.pane:not(.collapsed) {
+  flex: 1 1 var(--side-panel-width, 420px);
+}
+
 /* Collapsed → thin rail */
 .pane.collapsed { flex: 0 0 34px !important; min-width: 34px; }
 .pane.collapsed > .pane-inner { display: none; }
@@ -1994,17 +2006,69 @@ button.meta-pill {
 .doc-upload:hover { border-color: var(--blue, #3a6ea5); color: var(--blue, #3a6ea5); }
 
 /* ── PDF reading area ── */
+.pdf-body { display: flex; min-height: 0; min-width: 0; overflow: hidden; }
 .pdf-viewport {
   position: relative;
   overflow: auto;
   padding: 16px;
   background: #e9e8e3;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* ── Page minimap ── */
+.pdf-minimap {
+  flex: 0 0 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel, #f4f2ec);
+  border-left: 1px solid var(--line);
+}
+.pdf-minimap[hidden] { display: none; }
+.pdf-minimap-item {
+  position: relative;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 2px;
+  line-height: 0;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.pdf-minimap-item:hover { border-color: var(--blue, #3a6ea5); }
+.pdf-minimap-item.active {
+  border-color: var(--blue, #3a6ea5);
+  box-shadow: 0 0 0 2px rgba(58, 110, 165, 0.35);
+}
+.pdf-minimap-item canvas { display: block; width: 100%; height: auto; border-radius: 1px; }
+.pdf-minimap-num {
+  position: absolute;
+  bottom: 2px;
+  right: 3px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 2px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
 }
 .pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 16px; min-width: min-content; }
 /* When a page is wider than the viewport, centering would clip the left edge; left-align
    instead so the left margin stays visible and the page scrolls to the right. */
 .pdf-viewport { display: flex; flex-direction: column; }
 .pdf-pages { margin: 0 auto; }
+/* Horizontal layout: pages sit side by side and the viewport scrolls sideways,
+   so one or two pages fit under the eye at once. */
+.pdf-pages.horizontal {
+  flex-direction: row;
+  align-items: flex-start;
+  margin: 0;
+  min-width: max-content;
+}
 .pdf-page {
   position: relative;
   background: #fff;

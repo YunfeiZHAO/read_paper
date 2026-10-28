@@ -44,6 +44,8 @@ const state = {
   currentDocId: localStorage.getItem("currentDocId") || null,
   pdfDoc: null,
   pdfScale: Number(localStorage.getItem("pdfScale")) || 1.3,
+  pdfHorizontal: localStorage.getItem("pdfHorizontal") === "1",
+  pdfMinimapOpen: localStorage.getItem("pdfMinimapOpen") === "1",
   pdfRenderToken: 0,
   pdfPageViewports: new Map(),
   highlights: [],
@@ -157,6 +159,9 @@ const els = {
   pdfPageInfo: document.getElementById("pdfPageInfo"),
   pdfZoomInBtn: document.getElementById("pdfZoomInBtn"),
   pdfZoomOutBtn: document.getElementById("pdfZoomOutBtn"),
+  pdfLayoutBtn: document.getElementById("pdfLayoutBtn"),
+  pdfMinimap: document.getElementById("pdfMinimap"),
+  pdfMinimapBtn: document.getElementById("pdfMinimapBtn"),
   treePane: document.getElementById("treePane"),
   selectionToolbar: document.getElementById("selectionToolbar"),
   selHighlightBtn: document.getElementById("selHighlightBtn"),
@@ -2611,8 +2616,11 @@ async function loadPdf() {
       await renderPdfPage(pdf, n, pageEl, token);
       if (token !== state.pdfRenderToken) return;
     }
+    applyPdfLayout();
     updatePdfPageInfo();
     renderHighlights();
+    buildPdfMinimap();
+    updateMinimapActive();
   } catch (err) {
     console.error("PDF failed to load", err);
     if (els.pdfPages) {
@@ -2682,6 +2690,114 @@ function setPdfScale(scale) {
   state.pdfScale = clamp(scale, 0.5, 3);
   localStorage.setItem("pdfScale", String(state.pdfScale));
   loadPdf();
+}
+
+// Toggle between the default vertical page stack (scroll down through pages)
+// and a horizontal layout where pages sit side by side and scroll sideways,
+// so one or two pages fit under the eye at once.
+function applyPdfLayout() {
+  if (els.pdfPages) els.pdfPages.classList.toggle("horizontal", state.pdfHorizontal);
+  if (els.pdfViewport) els.pdfViewport.classList.toggle("horizontal", state.pdfHorizontal);
+  if (els.pdfLayoutBtn) {
+    els.pdfLayoutBtn.classList.toggle("active", state.pdfHorizontal);
+    els.pdfLayoutBtn.title = state.pdfHorizontal
+      ? "Switch to vertical scrolling"
+      : "Switch to side-by-side pages";
+  }
+}
+
+function togglePdfLayout() {
+  state.pdfHorizontal = !state.pdfHorizontal;
+  localStorage.setItem("pdfHorizontal", state.pdfHorizontal ? "1" : "0");
+  applyPdfLayout();
+}
+
+// ── Page minimap ──────────────────────────────────────────────────────────
+// A narrow column of page thumbnails for quick navigation. Thumbnails are
+// cheaply copied from each already-rendered page canvas via drawImage, so the
+// PDF is never re-rendered at a second scale.
+const MINIMAP_THUMB_WIDTH = 80;
+
+function applyMinimapVisibility() {
+  if (els.pdfMinimap) els.pdfMinimap.hidden = !state.pdfMinimapOpen;
+  if (els.pdfMinimapBtn) {
+    els.pdfMinimapBtn.classList.toggle("active", state.pdfMinimapOpen);
+    els.pdfMinimapBtn.title = state.pdfMinimapOpen ? "Hide page minimap" : "Show page minimap";
+  }
+}
+
+function toggleMinimap() {
+  state.pdfMinimapOpen = !state.pdfMinimapOpen;
+  localStorage.setItem("pdfMinimapOpen", state.pdfMinimapOpen ? "1" : "0");
+  applyMinimapVisibility();
+  if (state.pdfMinimapOpen) {
+    buildPdfMinimap();
+    updateMinimapActive();
+  }
+}
+
+function buildPdfMinimap() {
+  if (!els.pdfMinimap || !state.pdfDoc) return;
+  applyMinimapVisibility();
+  if (!state.pdfMinimapOpen) return; // skip the work while hidden
+  const items = [];
+  els.pdfPages.querySelectorAll(".pdf-page").forEach((pageEl) => {
+    const page = pageEl.dataset.page; // 0-based (string)
+    const srcCanvas = pageEl.querySelector(".pdf-canvas");
+    if (!srcCanvas) return;
+
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "pdf-minimap-item";
+    item.dataset.page = page;
+
+    const thumb = document.createElement("canvas");
+    const scale = MINIMAP_THUMB_WIDTH / srcCanvas.width;
+    thumb.width = MINIMAP_THUMB_WIDTH;
+    thumb.height = Math.max(1, Math.round(srcCanvas.height * scale));
+    thumb.getContext("2d").drawImage(srcCanvas, 0, 0, thumb.width, thumb.height);
+    item.appendChild(thumb);
+
+    const num = document.createElement("span");
+    num.className = "pdf-minimap-num";
+    num.textContent = String(Number(page) + 1);
+    item.appendChild(num);
+
+    item.addEventListener("click", () => scrollPageIntoView(Number(page)));
+    items.push(item);
+  });
+  els.pdfMinimap.replaceChildren(...items);
+}
+
+function scrollPageIntoView(page) {
+  if (!els.pdfPages) return;
+  const pageEl = els.pdfPages.querySelector(`.pdf-page[data-page="${page}"]`);
+  if (pageEl) pageEl.scrollIntoView({ behavior: "smooth", block: "start", inline: "start" });
+}
+
+// Highlight the minimap thumbnail for whichever page is most in view.
+function updateMinimapActive() {
+  if (!els.pdfMinimap || !state.pdfMinimapOpen || !els.pdfViewport) return;
+  const pages = els.pdfPages.querySelectorAll(".pdf-page");
+  if (!pages.length) return;
+  const vp = els.pdfViewport.getBoundingClientRect();
+  const vpCenter = state.pdfHorizontal ? vp.left + vp.width / 2 : vp.top + vp.height / 2;
+  let best = null;
+  let bestDist = Infinity;
+  pages.forEach((pageEl) => {
+    const r = pageEl.getBoundingClientRect();
+    const center = state.pdfHorizontal ? r.left + r.width / 2 : r.top + r.height / 2;
+    const dist = Math.abs(center - vpCenter);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = pageEl.dataset.page;
+    }
+  });
+  els.pdfMinimap.querySelectorAll(".pdf-minimap-item").forEach((item) => {
+    const active = item.dataset.page === best;
+    item.classList.toggle("active", active);
+    if (active) item.scrollIntoView({ block: "nearest" });
+  });
 }
 
 // ── Text selection → floating toolbar ────────────────────────────────────
@@ -3159,6 +3275,20 @@ function wireEvents() {
   // ── PDF zoom / selection / highlights ──
   els.pdfZoomInBtn.addEventListener("click", () => setPdfScale(state.pdfScale * 1.15));
   els.pdfZoomOutBtn.addEventListener("click", () => setPdfScale(state.pdfScale / 1.15));
+  if (els.pdfLayoutBtn) els.pdfLayoutBtn.addEventListener("click", togglePdfLayout);
+  if (els.pdfMinimapBtn) els.pdfMinimapBtn.addEventListener("click", toggleMinimap);
+  if (els.pdfViewport) {
+    let minimapRaf = 0;
+    els.pdfViewport.addEventListener("scroll", () => {
+      if (minimapRaf) return;
+      minimapRaf = requestAnimationFrame(() => {
+        minimapRaf = 0;
+        updateMinimapActive();
+      });
+    });
+  }
+  applyPdfLayout();
+  applyMinimapVisibility();
   els.pdfPages.addEventListener("mouseup", handlePdfMouseUp);
   els.pdfPages.addEventListener("click", onHighlightClick);
   els.pdfPages.addEventListener("contextmenu", onHighlightContextMenu);
