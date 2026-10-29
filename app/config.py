@@ -66,6 +66,26 @@ BACKENDS = {"codex", "claude"}
 # Default for the web_search tool (Codex's --search / Claude's web_search tool). The
 # frontend can override it per request; this default only applies when it doesn't. Off by default.
 ENABLE_WEB_SEARCH = os.environ.get("ENABLE_WEB_SEARCH", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+# ── Local paper search (fallback for Claude's web_search) ──────────────────
+# When web search is ON for a request but the gateway forbids the server-side web_search
+# tool, the Claude backend falls back to this local, key-free academic search instead of
+# dropping to bash-only. It is never offered when the user turned web search off.
+ENABLE_PAPER_SEARCH_FALLBACK = (
+    os.environ.get("ENABLE_PAPER_SEARCH_FALLBACK", "true").strip().lower() in {"1", "true", "yes", "on"}
+)
+PAPER_SEARCH_SOURCES = [
+    s.strip()
+    for s in os.environ.get(
+        "PAPER_SEARCH_SOURCES", "arxiv,semantic_scholar,openalex,dblp,openreview"
+    ).split(",")
+    if s.strip()
+]
+PAPER_SEARCH_MAX_RESULTS = int(os.environ.get("PAPER_SEARCH_MAX_RESULTS", "10"))
+PAPER_SEARCH_TIMEOUT_SECONDS = int(os.environ.get("PAPER_SEARCH_TIMEOUT_SECONDS", "20"))
+# Optional: raise Semantic Scholar's anonymous rate limit / join OpenAlex's polite pool.
+SEMANTIC_SCHOLAR_API_KEY = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+OPENALEX_MAILTO = os.environ.get("OPENALEX_MAILTO", "").strip()
 TEXT_EXCERPT_BYTES = int(os.environ.get("CODEX_QA_TEXT_EXCERPT_BYTES", "60000"))
 WORKSPACE_TEXT_PREVIEW_BYTES = int(os.environ.get("CODEX_QA_WORKSPACE_TEXT_PREVIEW_BYTES", "524288"))
 WORKSPACE_FILE_LIST_LIMIT = int(os.environ.get("CODEX_QA_WORKSPACE_FILE_LIST_LIMIT", "500"))

@@ -11,10 +11,12 @@ from ..config import (
     CLAUDE_API_TIMEOUT_SECONDS,
     CLAUDE_BASH_TIMEOUT_SECONDS,
     CLAUDE_MAX_TOOL_ITERATIONS,
+    ENABLE_PAPER_SEARCH_FALLBACK,
     BASE_DIR,
     WORK_DIR,
     anthropic,
 )
+from ..paper_search import format_results_for_model, paper_search
 from ..db import (
     get_document,
     get_files,
@@ -86,6 +88,53 @@ def _claude_initial_tools(bash_tool: Dict[str, Any], enabled: bool) -> List[Dict
     return [bash_tool]
 
 
+# Local academic-search tool offered ONLY as a fallback: when the request asked for web
+# search but the gateway rejected every web_search variant. It is never added when the
+# user turned web search off (that means "no web", so bash-only stays correct).
+PAPER_SEARCH_TOOL: Dict[str, Any] = {
+    "name": "paper_search",
+    "description": (
+        "Search academic literature across arXiv, Semantic Scholar, OpenAlex, DBLP, and "
+        "OpenReview (ICLR/NeurIPS/EMNLP/ACL and other top venues). Returns de-duplicated "
+        "papers with authors, year, venue, abstract, citation count, and URLs/PDF links. "
+        "Use this for any paper, citation, author, or literature lookup. Native web search "
+        "is unavailable in this environment."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search terms, e.g. a title, topic, or author."},
+            "sources": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["arxiv", "semantic_scholar", "openalex", "dblp", "openreview"],
+                },
+                "description": "Optional subset of sources to query. Defaults to all.",
+            },
+            "limit": {"type": "integer", "description": "Max results to return (default 10)."},
+            "year_from": {"type": "integer", "description": "Only papers published in or after this year."},
+            "year_to": {"type": "integer", "description": "Only papers published in or before this year."},
+            "venue": {"type": "string", "description": "Case-insensitive substring filter on venue, e.g. 'NeurIPS'."},
+        },
+        "required": ["query"],
+    },
+}
+
+
+async def _run_claude_paper_search_tool(tool_input: Dict[str, Any]) -> str:
+    payload = await asyncio.to_thread(
+        paper_search,
+        query=str(tool_input.get("query") or ""),
+        sources=tool_input.get("sources"),
+        limit=tool_input.get("limit"),
+        year_from=tool_input.get("year_from"),
+        year_to=tool_input.get("year_to"),
+        venue=tool_input.get("venue"),
+    )
+    return format_results_for_model(payload)
+
+
 async def _run_claude_api_for_node_async(node_id: str) -> None:
     node = get_node(node_id)
     if not node:
@@ -148,7 +197,7 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
     error_message: Optional[str] = None
 
     async def run_loop() -> None:
-        nonlocal answer, prompt_tokens, completion_tokens, error_message, tools
+        nonlocal answer, prompt_tokens, completion_tokens, error_message, tools, system_prompt
 
         response = None
         for _ in range(CLAUDE_MAX_TOOL_ITERATIONS):
@@ -170,6 +219,15 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
                     if remaining:
                         tools = [bash_tool, remaining[0]]
                         note = f"The current gateway does not support {current_type}; trying {remaining[0]['type']} instead: {exc}"
+                    elif ENABLE_PAPER_SEARCH_FALLBACK:
+                        # Web search was requested but the gateway forbids every web_search
+                        # variant: fall back to the local academic paper_search tool.
+                        tools = [bash_tool, PAPER_SEARCH_TOOL]
+                        system_prompt += (
+                            " Native web search is unavailable here; use the paper_search tool "
+                            "for any paper, citation, author, or literature lookup."
+                        )
+                        note = f"The current gateway supports no web_search variant; using the local paper_search tool instead: {exc}"
                     else:
                         tools = [bash_tool]
                         note = f"The current gateway supports no web_search variant; fell back to bash only: {exc}"
@@ -251,6 +309,26 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
                                 "type": "command_execution",
                                 "command": command or "(restart)",
                                 "aggregated_output": output,
+                                "status": "completed",
+                            },
+                        }
+                    )
+                    tool_results.append(
+                        {"type": "tool_result", "tool_use_id": block.id, "content": output}
+                    )
+                elif block.name == "paper_search":
+                    tool_input = block.input or {}
+                    output = await _run_claude_paper_search_tool(tool_input)
+                    query = str(tool_input.get("query") or "")
+                    # Log as a web_search item so the UI's existing search-activity
+                    # rendering and collect_tools_count pick it up unchanged.
+                    events.append(
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "id": block.id,
+                                "type": "web_search",
+                                "query": f"paper_search: {query}" if query else "paper_search",
                                 "status": "completed",
                             },
                         }

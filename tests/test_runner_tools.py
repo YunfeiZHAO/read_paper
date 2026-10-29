@@ -1,7 +1,7 @@
 """The runners' "include a web-search tool?" decision (pure functions, no network)."""
 from __future__ import annotations
 
-from app.runners.claude import WEB_SEARCH_VARIANTS, _claude_initial_tools
+from app.runners.claude import PAPER_SEARCH_TOOL, WEB_SEARCH_VARIANTS, _claude_initial_tools
 from app.runners.codex import _codex_search_args
 
 
@@ -26,3 +26,19 @@ def test_claude_tools_enabled_includes_web_search():
     assert bash in tools
     assert tools[-1] == WEB_SEARCH_VARIANTS[0]
     assert any(t.get("name") == "web_search" for t in tools)
+
+
+def test_paper_search_never_offered_upfront():
+    """paper_search is a fallback only — it must not appear in the initial tool set,
+    whether web search is on or off. It is swapped in only after the gateway rejects
+    every web_search variant."""
+    bash = {"type": "bash_20250124", "name": "bash"}
+    assert not any(t.get("name") == "paper_search" for t in _claude_initial_tools(bash, False))
+    assert not any(t.get("name") == "paper_search" for t in _claude_initial_tools(bash, True))
+
+
+def test_paper_search_tool_schema_is_valid():
+    assert PAPER_SEARCH_TOOL["name"] == "paper_search"
+    schema = PAPER_SEARCH_TOOL["input_schema"]
+    assert schema["required"] == ["query"]
+    assert "query" in schema["properties"]
