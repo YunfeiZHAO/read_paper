@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>paper reader tree</title>
+    <link rel="icon" href="/static/icons/book-favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
@@ -298,6 +299,21 @@
             </div>
           </div>
           <pre id="eventsModalBody" class="events-modal-body"></pre>
+        </div>
+      </div>
+
+      <div id="answerModal" class="events-modal" hidden>
+        <div class="events-modal-backdrop" data-answer-close></div>
+        <div class="events-modal-card" role="dialog" aria-modal="true" aria-label="Full agent response">
+          <div class="events-modal-head">
+            <div class="events-modal-title">Full Response</div>
+            <div class="events-modal-actions">
+              <button id="answerCopyBtn" type="button" class="events-modal-btn">Copy</button>
+              <button id="answerDownloadBtn" type="button" class="events-modal-btn primary">Download</button>
+              <button id="answerCloseBtn" type="button" class="events-modal-btn" data-answer-close aria-label="Close">✕</button>
+            </div>
+          </div>
+          <pre id="answerModalBody" class="events-modal-body"></pre>
         </div>
       </div>
 

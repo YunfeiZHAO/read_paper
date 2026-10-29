@@ -1,0 +1,36 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bookGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#287c74;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1f5a51;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Book spine/binding -->
+  <rect x="30" y="12" width="4" height="40" fill="#b9b5aa" rx="1"/>
+
+  <!-- Left page with gradient -->
+  <path d="M 12 14 L 32 14 L 32 50 L 12 50 Q 11 52 12 50 Z" fill="url(#bookGradient)" opacity="0.85"/>
+
+  <!-- Right page -->
+  <path d="M 32 14 L 52 14 L 52 50 L 32 50 Z" fill="url(#bookGradient)"/>
+
+  <!-- Subtle highlight on spine -->
+  <rect x="30.5" y="12" width="1.5" height="40" fill="white" opacity="0.2" rx="1"/>
+
+  <!-- Text lines on left page (highlighted) -->
+  <g opacity="0.7">
+    <line x1="16" y1="22" x2="28" y2="22" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="16" y1="28" x2="28" y2="28" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="16" y1="34" x2="28" y2="34" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="16" y1="40" x2="24" y2="40" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+  </g>
+
+  <!-- Text lines on right page -->
+  <g opacity="0.6">
+    <line x1="36" y1="22" x2="48" y2="22" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="36" y1="28" x2="48" y2="28" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="36" y1="34" x2="48" y2="34" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="36" y1="40" x2="44" y2="40" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+  </g>
+</svg>

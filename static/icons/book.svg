@@ -1,0 +1,22 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Book spine/fold -->
+  <path d="M 32 12 L 32 52" stroke="#b9b5aa" stroke-width="1"/>
+
+  <!-- Left page -->
+  <path d="M 12 14 L 32 14 L 32 50 L 12 50 Z" stroke="#287c74" fill="none"/>
+
+  <!-- Right page -->
+  <path d="M 32 14 L 52 14 L 52 50 L 32 50 Z" stroke="#287c74" fill="none"/>
+
+  <!-- Text lines on left page -->
+  <line x1="16" y1="22" x2="28" y2="22" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+  <line x1="16" y1="28" x2="28" y2="28" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+  <line x1="16" y1="34" x2="28" y2="34" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+  <line x1="16" y1="40" x2="24" y2="40" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+
+  <!-- Text lines on right page -->
+  <line x1="36" y1="22" x2="48" y2="22" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+  <line x1="36" y1="28" x2="48" y2="28" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+  <line x1="36" y1="34" x2="48" y2="34" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+  <line x1="36" y1="40" x2="44" y2="40" stroke="#287c74" stroke-width="1" opacity="0.6"/>
+</svg>

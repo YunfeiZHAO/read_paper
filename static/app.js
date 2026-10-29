@@ -152,6 +152,11 @@ const els = {
   eventsCopyBtn: document.getElementById("eventsCopyBtn"),
   eventsDownloadBtn: document.getElementById("eventsDownloadBtn"),
   eventsCloseBtn: document.getElementById("eventsCloseBtn"),
+  answerModal: document.getElementById("answerModal"),
+  answerModalBody: document.getElementById("answerModalBody"),
+  answerCopyBtn: document.getElementById("answerCopyBtn"),
+  answerDownloadBtn: document.getElementById("answerDownloadBtn"),
+  answerCloseBtn: document.getElementById("answerCloseBtn"),
   // ── documents / PDF ──
   homeBtn: document.getElementById("homeBtn"),
   breadcrumb: document.getElementById("breadcrumb"),
@@ -640,6 +645,14 @@ function renderHome() {
     body.type = "button";
     body.className = "ws-card-body";
     body.addEventListener("click", () => navigate("workspace", { wsId: ws.id }));
+
+    const icon = document.createElement("img");
+    icon.src = "/static/icons/book-filled.svg";
+    icon.alt = "";
+    icon.style.width = "48px";
+    icon.style.height = "48px";
+    icon.style.marginBottom = "8px";
+
     const title = document.createElement("div");
     title.className = "ws-card-title";
     title.textContent = ws.title || "Untitled";
@@ -647,7 +660,7 @@ function renderHome() {
     meta.className = "ws-card-meta";
     const when = (ws.last_opened_at || "").slice(0, 10);
     meta.textContent = `${ws.document_count || 0} PDF` + (when ? `  ·  ${when}` : "");
-    body.append(title, meta);
+    body.append(icon, title, meta);
     if (ws.description) {
       const desc = document.createElement("div");
       desc.className = "ws-card-desc";
@@ -724,13 +737,21 @@ function renderWorkspaceDetail() {
         body.addEventListener("click", () =>
           navigate("reader", { wsId: state.currentWorkspaceId, docId: doc.id })
         );
+
+        const icon = document.createElement("img");
+        icon.src = "/static/icons/book-filled.svg";
+        icon.alt = "";
+        icon.style.width = "48px";
+        icon.style.height = "48px";
+        icon.style.marginBottom = "8px";
+
         const t = document.createElement("div");
         t.className = "doc-card-title";
         t.textContent = doc.title || doc.original_name || "Untitled";
         const m = document.createElement("div");
         m.className = "doc-card-meta";
         m.textContent = doc.num_pages ? `${doc.num_pages} pages` : "PDF";
-        body.append(t, m);
+        body.append(icon, t, m);
         const del = document.createElement("button");
         del.type = "button";
         del.className = "doc-card-del";
@@ -1698,14 +1719,25 @@ function makeBubble(role, text, meta = "", tools = [], active = false, attachmen
   const label = document.createElement("div");
   label.className = "bubble-label";
   label.textContent = role === "user" ? "User" : "Agent";
-  if (role === "agent" && node && (node.raw_events || []).length) {
-    const eventsBtn = document.createElement("button");
-    eventsBtn.type = "button";
-    eventsBtn.className = "bubble-events-btn";
-    eventsBtn.textContent = "{ } JSON";
-    eventsBtn.title = "View / download the raw agent events";
-    eventsBtn.addEventListener("click", () => openEventsModal(node));
-    label.appendChild(eventsBtn);
+  if (role === "agent" && node) {
+    if ((node.raw_events || []).length) {
+      const eventsBtn = document.createElement("button");
+      eventsBtn.type = "button";
+      eventsBtn.className = "bubble-events-btn";
+      eventsBtn.textContent = "{ } JSON";
+      eventsBtn.title = "View / download the raw agent events";
+      eventsBtn.addEventListener("click", () => openEventsModal(node));
+      label.appendChild(eventsBtn);
+    }
+    if (node.answer) {
+      const viewBtn = document.createElement("button");
+      viewBtn.type = "button";
+      viewBtn.className = "bubble-events-btn";
+      viewBtn.textContent = "View";
+      viewBtn.title = "View full response";
+      viewBtn.addEventListener("click", () => openAnswerModal(node.answer, node.title || `node-${node.id}`));
+      label.appendChild(viewBtn);
+    }
   }
   const toolList = role === "agent" ? renderToolCalls(tools, active) : null;
   bubble.appendChild(label);
@@ -1802,6 +1834,52 @@ async function copyEventsJson() {
   } catch {
     els.eventsCopyBtn.textContent = "Copy failed";
     setTimeout(() => (els.eventsCopyBtn.textContent = "Copy"), 1200);
+  }
+}
+
+// ── Full answer viewer ───────────────────────────────────────────────────
+// Lets the user view the full agent response in a modal and download it as text.
+let _answerModalText = "";
+let _answerNodeTitle = null;
+
+function openAnswerModal(text, nodeTitle = "node") {
+  _answerModalText = text || "";
+  _answerNodeTitle = nodeTitle;
+  els.answerModalBody.textContent = _answerModalText;
+  els.answerModal.hidden = false;
+}
+
+function closeAnswerModal() {
+  els.answerModal.hidden = true;
+  _answerModalText = "";
+  _answerNodeTitle = null;
+}
+
+function downloadAnswerText() {
+  if (!_answerModalText) return;
+  const blob = new Blob([_answerModalText], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const base = (_answerNodeTitle || "response")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "response";
+  a.href = url;
+  a.download = `${base}-response.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyAnswerText() {
+  try {
+    await copyTextToClipboard(_answerModalText);
+    els.answerCopyBtn.textContent = "Copied";
+    setTimeout(() => (els.answerCopyBtn.textContent = "Copy"), 1200);
+  } catch {
+    els.answerCopyBtn.textContent = "Copy failed";
+    setTimeout(() => (els.answerCopyBtn.textContent = "Copy"), 1200);
   }
 }
 
@@ -3903,8 +3981,19 @@ function wireEvents() {
   els.eventsModal.addEventListener("click", (event) => {
     if (event.target.closest("[data-events-close]")) closeEventsModal();
   });
+
+  els.answerDownloadBtn.addEventListener("click", downloadAnswerText);
+  els.answerCopyBtn.addEventListener("click", copyAnswerText);
+  els.answerCloseBtn.addEventListener("click", closeAnswerModal);
+  els.answerModal.addEventListener("click", (event) => {
+    if (event.target.closest("[data-answer-close]")) closeAnswerModal();
+  });
+
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !els.eventsModal.hidden) closeEventsModal();
+    if (event.key === "Escape") {
+      if (!els.eventsModal.hidden) closeEventsModal();
+      if (!els.answerModal.hidden) closeAnswerModal();
+    }
   });
 
   els.treeSvg.addEventListener("wheel", (event) => {
