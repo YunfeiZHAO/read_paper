@@ -17,6 +17,10 @@ dependencies = [
 [project.optional-dependencies]
 codex = ["sub-pool-client"]
 
+# Desktop app: run the local server inside a native window (pywebview) and freeze it into a
+# standalone .app/.exe/binary with PyInstaller. Enable with: uv sync --extra desktop
+desktop = ["pywebview>=5", "pyinstaller>=6"]
+
 # Packages the bash tool (Codex/Claude running commands to read papers) may use; the app
 # itself never imports them. Pre-install so the bash tool works without on-the-fly installs:
 # uv sync --extra tools

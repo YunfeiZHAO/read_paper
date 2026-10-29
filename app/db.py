@@ -238,6 +238,14 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace_id ON files(workspace_id)")
 
+        # Per-workspace LLM settings (bring-your-own endpoint/key/model for the Claude backend).
+        # NULL on any column means "fall back to the env/config default" — see
+        # get_workspace_llm_settings(). Old databases get these columns added here.
+        ws_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workspaces)").fetchall()}
+        for col in ("api_base_url", "api_key", "api_auth_type", "api_model"):
+            if col not in ws_columns:
+                conn.execute(f"ALTER TABLE workspaces ADD COLUMN {col} TEXT")
+
         _migrate_node_notes_to_files(conn)
         _reconcile_notes(conn)
 
@@ -543,6 +551,9 @@ def path_to_node(node_id: Optional[str]) -> List[Dict[str, Any]]:
 def public_workspace(row: sqlite3.Row) -> Dict[str, Any]:
     ws = dict(row)
     ws["archived"] = bool(ws.get("archived"))
+    # Never expose the stored API key/token to the frontend; report only whether one is set.
+    raw_key = ws.pop("api_key", None)
+    ws["has_api_key"] = bool((raw_key or "").strip())
     return ws
 
 
@@ -569,6 +580,39 @@ def get_workspace(workspace_id: str) -> Optional[Dict[str, Any]]:
     return public_workspace(row) if row else None
 
 
+def get_workspace_llm_settings(workspace_id: Optional[str]) -> Dict[str, Any]:
+    """Resolve the Claude-backend connection settings for a workspace.
+
+    Returns {base_url, api_key, auth_type, model}. Any field the workspace has not set is
+    returned as None, which the runner treats as "fall back to the env/config default"
+    (the anthropic SDK reads ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY
+    from the environment itself; model falls back to CLAUDE_API_MODEL). This is the only
+    accessor that returns the raw key, and it is used server-side only — never serialized
+    to the frontend (see public_workspace()).
+    """
+    empty = {"base_url": None, "api_key": None, "auth_type": None, "model": None}
+    if not workspace_id:
+        return empty
+    with DB_LOCK, db_connection() as conn:
+        row = conn.execute(
+            "SELECT api_base_url, api_key, api_auth_type, api_model FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+    if not row:
+        return empty
+
+    def _clean(value: Any) -> Optional[str]:
+        value = (value or "").strip()
+        return value or None
+
+    return {
+        "base_url": _clean(row["api_base_url"]),
+        "api_key": _clean(row["api_key"]),
+        "auth_type": _clean(row["api_auth_type"]),
+        "model": _clean(row["api_model"]),
+    }
+
+
 def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
     """List workspaces ordered by most-recently-opened, each annotated with its PDF count."""
     where = "" if include_archived else "WHERE w.archived = 0"
@@ -593,9 +637,17 @@ def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
 
 def update_workspace(workspace_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
     allowed = {"title", "description", "archived"}
+    # LLM-settings columns: for these, an empty/blank string means "clear → use the env default",
+    # which we store as NULL. (The route omits api_key entirely when the user leaves it blank, so
+    # a blank password field never wipes an existing key.)
+    settings_fields = {"api_base_url", "api_key", "api_auth_type", "api_model"}
+    allowed = allowed | settings_fields
     payload = {key: value for key, value in fields.items() if key in allowed}
     if not payload:
         return get_workspace(workspace_id)
+    for key in settings_fields:
+        if key in payload and isinstance(payload[key], str) and not payload[key].strip():
+            payload[key] = None
     payload["updated_at"] = now_iso()
     assignments = ", ".join(f"{key} = ?" for key in payload.keys())
     values = list(payload.values()) + [workspace_id]

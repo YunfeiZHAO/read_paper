@@ -54,6 +54,20 @@ ANTHROPIC_AUTH_TOKEN=...
 # CLAUDE_API_MODEL=claude-sonnet-4-6   # optional override
 ```
 
+#### Per-workspace model & API settings
+
+Each workspace has a **Model & API settings** block (on the workspace page) where you set your
+own Base URL, auth type (Bearer token or API key), key, and model — overriding the env defaults
+for that workspace's Claude-backend calls. Leave a field blank to fall back to the server default.
+The key is stored in the local SQLite DB and is **never** returned to the browser (the UI only
+shows whether one is configured).
+
+Because the Claude backend talks to any **Anthropic-API-compatible** endpoint, this gives you
+model flexibility: the official Anthropic API, a custom gateway, or a proxy such as **LiteLLM**
+/ **one-api** that fronts other models (GPT, Gemini, Qwen, local Ollama, …) behind the Anthropic
+request shape. Talking to those providers' *native* APIs is out of scope — route them through an
+Anthropic-compatible proxy instead.
+
 Common environment variables (see `.env.example` for the full list):
 
 | Variable | Purpose |
@@ -78,6 +92,34 @@ Common environment variables (see `.env.example` for the full list):
 
 Pick the backend in the top bar before asking. Both always run with web search available
 (per the toggle) and full local execution in the shared workspace directory.
+
+## Run as a desktop app
+
+For end users who shouldn't touch a terminal, the app can run inside a native window
+(via [pywebview](https://pywebview.flowrl.com/)) and be frozen into a standalone
+`.app` / `.exe` / Linux binary with [PyInstaller](https://pyinstaller.org/). The packaged app
+targets the **Claude backend only** and stores its data in a per-OS application-data directory
+(macOS `~/Library/Application Support/ReadPaper`, Windows `%APPDATA%\ReadPaper`, Linux
+`~/.local/share/ReadPaper`) — not inside the app bundle. Users configure their own key and model
+in each workspace's **Model & API settings** block (above), so no key is baked into the build.
+
+```bash
+uv sync --extra desktop        # install pywebview + pyinstaller
+uv run python desktop.py       # dev: launch the window against a local server
+
+# Build a standalone app (run on the OS you're targeting — PyInstaller does NOT cross-compile):
+./packaging/build_macos.sh     # → dist/ReadPaper.app
+./packaging/build_linux.sh     # → dist/ReadPaper/ReadPaper
+./packaging/build_windows.ps1  # → dist\ReadPaper\ReadPaper.exe
+```
+
+Each platform's binary must be built on that platform (use a CI matrix to produce all three).
+
+> **⚠️ Security.** The Claude backend's `bash` tool runs commands on the user's machine, and the
+> Codex backend uses `--dangerously-bypass-approvals-and-sandbox`. Distributing this app gives
+> whoever runs it an LLM with **local shell access** — fine for yourself or trusted users, but a
+> real remote-code-execution exposure otherwise. Only hand out builds to people you trust, or gate
+> the local-exec tools first.
 
 ## Data
 

@@ -166,6 +166,14 @@ const els = {
   wsAddPdfBtn: document.getElementById("wsAddPdfBtn"),
   wsDocGrid: document.getElementById("wsDocGrid"),
   wsFileList: document.getElementById("wsFileList"),
+  wsSettingsForm: document.getElementById("wsSettingsForm"),
+  wsApiBaseUrl: document.getElementById("wsApiBaseUrl"),
+  wsApiAuthType: document.getElementById("wsApiAuthType"),
+  wsApiKey: document.getElementById("wsApiKey"),
+  wsApiModel: document.getElementById("wsApiModel"),
+  wsSettingsStatus: document.getElementById("wsSettingsStatus"),
+  wsSettingsSave: document.getElementById("wsSettingsSave"),
+  wsSettingsClearKey: document.getElementById("wsSettingsClearKey"),
   documentSelect: document.getElementById("documentSelect"),
   docUploadInput: document.getElementById("docUploadInput"),
   docDeleteBtn: document.getElementById("docDeleteBtn"),
@@ -762,6 +770,58 @@ function renderWorkspaceDetail() {
       });
       els.wsFileList.replaceChildren(...rows);
     }
+  }
+
+  renderWorkspaceSettings(ws);
+}
+
+// Fill the workspace Settings block from the (masked) workspace object. The API key is
+// never returned by the server; we only know whether one is set (ws.has_api_key).
+function renderWorkspaceSettings(ws) {
+  if (!els.wsSettingsForm) return;
+  if (els.wsApiBaseUrl) els.wsApiBaseUrl.value = (ws && ws.api_base_url) || "";
+  if (els.wsApiAuthType) els.wsApiAuthType.value = (ws && ws.api_auth_type) || "bearer";
+  if (els.wsApiModel) els.wsApiModel.value = (ws && ws.api_model) || "";
+  if (els.wsApiKey) {
+    els.wsApiKey.value = "";
+    els.wsApiKey.placeholder = ws && ws.has_api_key ? "•••••••• (configured — blank keeps it)" : "Leave blank to use server default";
+  }
+  if (els.wsSettingsStatus) els.wsSettingsStatus.textContent = "";
+}
+
+async function saveWorkspaceSettings(options = {}) {
+  const ws = currentWorkspace() || state.wsDetail.workspace;
+  if (!ws) return;
+  const body = {
+    api_base_url: els.wsApiBaseUrl ? els.wsApiBaseUrl.value.trim() : "",
+    api_auth_type: els.wsApiAuthType ? els.wsApiAuthType.value : "bearer",
+    api_model: els.wsApiModel ? els.wsApiModel.value.trim() : "",
+  };
+  if (options.clearKey) {
+    body.clear_api_key = true;
+  } else if (els.wsApiKey && els.wsApiKey.value.trim()) {
+    body.api_key = els.wsApiKey.value.trim();
+  }
+  if (els.wsSettingsStatus) els.wsSettingsStatus.textContent = "Saving…";
+  try {
+    const res = await fetch(`/api/workspaces/${ws.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const updated = data.workspace || null;
+    if (updated) {
+      state.wsDetail.workspace = updated;
+      const idx = state.workspaces.findIndex((w) => w.id === updated.id);
+      if (idx >= 0) state.workspaces[idx] = { ...state.workspaces[idx], ...updated };
+    }
+    renderWorkspaceSettings(updated || ws);
+    if (els.wsSettingsStatus) els.wsSettingsStatus.textContent = options.clearKey ? "Key cleared." : "Saved.";
+  } catch (err) {
+    console.error(err);
+    if (els.wsSettingsStatus) els.wsSettingsStatus.textContent = "Save failed.";
   }
 }
 
@@ -3662,6 +3722,16 @@ function wireEvents() {
     });
   }
   if (els.wsAddPdfBtn) els.wsAddPdfBtn.addEventListener("click", () => els.docUploadInput.click());
+
+  if (els.wsSettingsForm) {
+    els.wsSettingsForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      saveWorkspaceSettings().catch(console.error);
+    });
+  }
+  if (els.wsSettingsClearKey) {
+    els.wsSettingsClearKey.addEventListener("click", () => saveWorkspaceSettings({ clearKey: true }).catch(console.error));
+  }
 
   // ── Document upload (one hidden input, shared by the workspace page and the reader's empty state) ──
   if (els.documentSelect) {

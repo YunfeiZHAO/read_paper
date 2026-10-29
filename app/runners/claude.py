@@ -15,7 +15,14 @@ from ..config import (
     WORK_DIR,
     anthropic,
 )
-from ..db import get_files, get_highlight, get_node, update_node
+from ..db import (
+    get_document,
+    get_files,
+    get_highlight,
+    get_node,
+    get_workspace_llm_settings,
+    update_node,
+)
 from ..events import collect_tools_count, trim_events_for_storage
 from ..prompts import build_prompt
 from ..utils import now_iso
@@ -94,11 +101,30 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
     )
     before_workspace = workspace_snapshot()
 
-    update_node(node_id, status="running", model=CLAUDE_API_MODEL)
+    # Resolve the workspace's bring-your-own endpoint/key/model (node -> document -> workspace).
+    # Any field left unset falls back to the env/config default: an unset base_url/key lets the
+    # anthropic SDK read ANTHROPIC_* from the environment, and an unset model uses CLAUDE_API_MODEL.
+    workspace_id = None
+    if node.get("document_id"):
+        doc = get_document(node["document_id"])
+        workspace_id = (doc or {}).get("workspace_id")
+    llm = get_workspace_llm_settings(workspace_id)
+    model = llm["model"] or CLAUDE_API_MODEL
+
+    update_node(node_id, status="running", model=model)
 
     web_search_enabled = bool(node.get("enable_web_search"))
 
-    client = anthropic.Anthropic()
+    client_kwargs: Dict[str, Any] = {}
+    if llm["base_url"]:
+        client_kwargs["base_url"] = llm["base_url"]
+    if llm["api_key"]:
+        # Bearer for custom gateways (ANTHROPIC_AUTH_TOKEN-style), x-api-key for the official API.
+        if (llm["auth_type"] or "bearer") == "api_key":
+            client_kwargs["api_key"] = llm["api_key"]
+        else:
+            client_kwargs["auth_token"] = llm["api_key"]
+    client = anthropic.Anthropic(**client_kwargs)
     system_prompt = (
         "You are the Q&A backend (answered this time by the Claude API). The app organizes "
         "conversations as a tree; this request inherits the ancestor context of a node and "
@@ -129,7 +155,7 @@ async def _run_claude_api_for_node_async(node_id: str) -> None:
             try:
                 response = await asyncio.to_thread(
                     client.messages.create,
-                    model=CLAUDE_API_MODEL,
+                    model=model,
                     max_tokens=16000,
                     system=system_prompt,
                     tools=tools,

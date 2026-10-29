@@ -7,11 +7,18 @@ every other module imports what it needs from here.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
-# BASE_DIR points at the repository root (the parent of the app/ package), so the
-# templates/static/.env/instance paths stay stable regardless of where Python is launched.
-BASE_DIR = Path(__file__).resolve().parent.parent
+# BASE_DIR points at the directory that holds templates/ and static/. Normally that's the
+# repository root (the parent of the app/ package), so paths stay stable regardless of where
+# Python is launched. When frozen by PyInstaller, the bundled data files are extracted under
+# sys._MEIPASS, so BASE_DIR points there instead. (The writable DATA_DIR is kept separate and
+# is driven by CODEX_QA_DATA_DIR, which the desktop launcher sets before import.)
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    BASE_DIR = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
 
 try:
     from dotenv import load_dotenv

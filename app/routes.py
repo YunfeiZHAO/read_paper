@@ -214,6 +214,20 @@ async def api_patch_workspace(workspace_id: str, request: Request) -> Dict[str, 
         fields["description"] = str(payload["description"] or "")
     if "archived" in payload:
         fields["archived"] = 1 if payload["archived"] else 0
+    # Per-workspace LLM settings (bring-your-own endpoint/key/model for the Claude backend).
+    # A blank value clears the field (→ env default). api_key is special: a blank/absent value
+    # leaves the stored key untouched, so editing only the model never wipes an existing key.
+    if "api_base_url" in payload:
+        fields["api_base_url"] = str(payload["api_base_url"] or "").strip()
+    if "api_model" in payload:
+        fields["api_model"] = str(payload["api_model"] or "").strip()
+    if "api_auth_type" in payload:
+        auth_type = str(payload["api_auth_type"] or "").strip().lower()
+        fields["api_auth_type"] = auth_type if auth_type in {"bearer", "api_key"} else ""
+    if str(payload.get("api_key") or "").strip():
+        fields["api_key"] = str(payload["api_key"]).strip()
+    elif payload.get("clear_api_key"):
+        fields["api_key"] = ""
     ws = update_workspace(workspace_id, **fields)
     return {"workspace": ws}
 
