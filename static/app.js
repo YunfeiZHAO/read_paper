@@ -646,13 +646,6 @@ function renderHome() {
     body.className = "ws-card-body";
     body.addEventListener("click", () => navigate("workspace", { wsId: ws.id }));
 
-    const icon = document.createElement("img");
-    icon.src = "/static/icons/book-filled.svg";
-    icon.alt = "";
-    icon.style.width = "48px";
-    icon.style.height = "48px";
-    icon.style.marginBottom = "8px";
-
     const title = document.createElement("div");
     title.className = "ws-card-title";
     title.textContent = ws.title || "Untitled";
@@ -660,7 +653,7 @@ function renderHome() {
     meta.className = "ws-card-meta";
     const when = (ws.last_opened_at || "").slice(0, 10);
     meta.textContent = `${ws.document_count || 0} PDF` + (when ? `  ·  ${when}` : "");
-    body.append(icon, title, meta);
+    body.append(title, meta);
     if (ws.description) {
       const desc = document.createElement("div");
       desc.className = "ws-card-desc";
@@ -738,20 +731,13 @@ function renderWorkspaceDetail() {
           navigate("reader", { wsId: state.currentWorkspaceId, docId: doc.id })
         );
 
-        const icon = document.createElement("img");
-        icon.src = "/static/icons/book-filled.svg";
-        icon.alt = "";
-        icon.style.width = "48px";
-        icon.style.height = "48px";
-        icon.style.marginBottom = "8px";
-
         const t = document.createElement("div");
         t.className = "doc-card-title";
         t.textContent = doc.title || doc.original_name || "Untitled";
         const m = document.createElement("div");
         m.className = "doc-card-meta";
         m.textContent = doc.num_pages ? `${doc.num_pages} pages` : "PDF";
-        body.append(icon, t, m);
+        body.append(t, m);
         const del = document.createElement("button");
         del.type = "button";
         del.className = "doc-card-del";

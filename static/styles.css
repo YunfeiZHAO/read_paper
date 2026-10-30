@@ -2899,18 +2899,3 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
 }
 .ws-file-row:hover { border-color: var(--accent); color: var(--accent); }
 .ws-file-sub { color: var(--muted); font-size: 12px; flex: 0 0 auto; }
-
-/* Book icons on cards */
-.ws-card-body img,
-.doc-card-body img {
-  width: 48px;
-  height: 48px;
-  object-fit: contain;
-  opacity: 0.85;
-  transition: opacity 0.12s;
-}
-
-.ws-card:hover .ws-card-body img,
-.doc-card:hover .doc-card-body img {
-  opacity: 1;
-}
