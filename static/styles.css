@@ -2865,10 +2865,18 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
   transition: opacity 0.12s;
 }
 .ws-card:hover .ws-card-actions { opacity: 1; }
-.doc-card-del {
+.doc-card-buttons {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.doc-card:hover .doc-card-buttons { opacity: 1; }
+.doc-card-rename,
+.doc-card-del {
   width: 26px;
   height: 26px;
   border: 1px solid var(--line);
@@ -2876,10 +2884,9 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
   background: var(--panel);
   color: var(--muted);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s;
+  transition: border-color 0.12s, color 0.12s;
 }
-.doc-card:hover .doc-card-del { opacity: 1; }
+.doc-card-rename:hover { border-color: var(--accent); color: var(--accent); }
 .doc-card-del:hover { border-color: var(--red); color: var(--red); }
 
 /* Shared files list (workspace detail) */

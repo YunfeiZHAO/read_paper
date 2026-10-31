@@ -41,6 +41,7 @@ from .db import (
     touch_document,
     touch_workspace,
     unlink_note_file,
+    update_document,
     update_highlight,
     update_node,
     update_workspace,
@@ -282,6 +283,21 @@ def api_get_document(document_id: str) -> Dict[str, Any]:
         "highlights": list_highlights(document_id),
         "nodes": nodes_for_document(document_id),
     }
+
+
+@router.patch("/api/documents/{document_id}")
+async def api_update_document(document_id: str, request: Request) -> Dict[str, Any]:
+    """Update a document's title."""
+    if not get_document(document_id):
+        raise HTTPException(status_code=404, detail="Document does not exist")
+    
+    body = await request.json()
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+    
+    update_document(document_id, title)
+    return {"document": get_document(document_id)}
 
 
 @router.delete("/api/documents/{document_id}")

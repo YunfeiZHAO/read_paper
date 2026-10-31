@@ -804,6 +804,15 @@ def touch_document(document_id: str, num_pages: Optional[int] = None) -> None:
             )
 
 
+def update_document(document_id: str, title: str) -> None:
+    """Update document title."""
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            "UPDATE documents SET title = ?, updated_at = ? WHERE id = ?",
+            (title, now_iso(), document_id),
+        )
+
+
 def delete_document(document_id: str) -> Dict[str, Any]:
     file_paths: List[str] = []
     with DB_LOCK, db_connection() as conn:

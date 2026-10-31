@@ -738,6 +738,20 @@ function renderWorkspaceDetail() {
         m.className = "doc-card-meta";
         m.textContent = doc.num_pages ? `${doc.num_pages} pages` : "PDF";
         body.append(t, m);
+        
+        const buttons = document.createElement("div");
+        buttons.className = "doc-card-buttons";
+        
+        const rename = document.createElement("button");
+        rename.type = "button";
+        rename.className = "doc-card-rename";
+        rename.title = "Rename PDF";
+        rename.textContent = "✎";
+        rename.addEventListener("click", (e) => {
+          e.stopPropagation();
+          renameDocument(doc).catch(console.error);
+        });
+        
         const del = document.createElement("button");
         del.type = "button";
         del.className = "doc-card-del";
@@ -747,7 +761,9 @@ function renderWorkspaceDetail() {
           e.stopPropagation();
           deleteDocument(doc).catch(console.error);
         });
-        card.append(body, del);
+        
+        buttons.append(rename, del);
+        card.append(body, buttons);
         return card;
       });
       els.wsDocGrid.replaceChildren(...cards);
@@ -879,6 +895,39 @@ async function removeWorkspace(ws) {
     } else {
       refreshCurrentScreen();
     }
+  } catch (err) {
+    window.alert(err.message);
+  }
+}
+
+async function renameDocument(doc) {
+  if (!doc) return;
+  const next = window.prompt(
+    "Rename PDF",
+    doc.title || doc.original_name || ""
+  );
+  if (!next) return;
+  
+  const title = next.trim();
+  if (!title) {
+    window.alert("Title cannot be empty");
+    return;
+  }
+  if (title === (doc.title || doc.original_name)) return;
+  
+  try {
+    const res = await fetch(`/api/documents/${doc.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "Rename failed");
+    }
+    await fetchWorkspaces();
+    if (state.currentWorkspaceId) await fetchWorkspaceDetail(state.currentWorkspaceId);
+    renderWorkspaceDetail();
   } catch (err) {
     window.alert(err.message);
   }
