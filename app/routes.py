@@ -287,7 +287,7 @@ def api_get_document(document_id: str) -> Dict[str, Any]:
 
 @router.patch("/api/documents/{document_id}")
 async def api_update_document(document_id: str, request: Request) -> Dict[str, Any]:
-    """Update a document's title."""
+    """Update a document's title and rename the file on disk."""
     if not get_document(document_id):
         raise HTTPException(status_code=404, detail="Document does not exist")
     
@@ -296,7 +296,11 @@ async def api_update_document(document_id: str, request: Request) -> Dict[str, A
     if not title:
         raise HTTPException(status_code=400, detail="Title cannot be empty")
     
-    update_document(document_id, title)
+    try:
+        update_document(document_id, title)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
     return {"document": get_document(document_id)}
 
 

@@ -805,11 +805,66 @@ def touch_document(document_id: str, num_pages: Optional[int] = None) -> None:
 
 
 def update_document(document_id: str, title: str) -> None:
-    """Update document title."""
+    """Update document title and rename the file on disk."""
     with DB_LOCK, db_connection() as conn:
+        # Get the document and its file info
+        doc = conn.execute(
+            "SELECT file_id FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        
+        if not doc:
+            raise ValueError("Document not found")
+        
+        file_id = doc["file_id"]
+        
+        # Get the current file record
+        file_record = conn.execute(
+            "SELECT path, stored_name FROM files WHERE id = ?", (file_id,)
+        ).fetchone()
+        
+        if not file_record:
+            raise ValueError("File not found")
+        
+        # Resolve the old file path
+        old_path = Path(resolve_stored_path(file_record["path"]))
+        
+        # Ensure title ends with .pdf extension
+        new_title = title.strip()
+        if not new_title.lower().endswith('.pdf'):
+            new_title = f"{new_title}.pdf"
+        
+        # New file path (same directory, new name)
+        new_path = old_path.parent / new_title
+        
+        # Rename the file on disk if it exists and the new name is different
+        file_renamed = False
+        if old_path.exists() and old_path.is_file():
+            if old_path != new_path:  # Only rename if name actually changed
+                try:
+                    old_path.rename(new_path)
+                    file_renamed = True
+                except OSError as e:
+                    raise ValueError(f"Failed to rename file from {old_path} to {new_path}: {e}")
+            else:
+                file_renamed = True  # No rename needed, but mark as successful
+        
+        # Calculate the new stored path (relative to WORK_DIR if possible)
+        try:
+            new_stored_path = str(new_path.relative_to(WORK_DIR))
+        except ValueError:
+            # If not relative to WORK_DIR, use absolute path
+            new_stored_path = str(new_path)
+        
+        # Update the files table with new name and path
         conn.execute(
-            "UPDATE documents SET title = ?, updated_at = ? WHERE id = ?",
-            (title, now_iso(), document_id),
+            "UPDATE files SET original_name = ?, stored_name = ?, path = ? WHERE id = ?",
+            (new_title, new_title, new_stored_path, file_id),
+        )
+        
+        # Update document title and timestamp
+        conn.execute(
+            "UPDATE documents SET title = ?, original_name = ?, updated_at = ? WHERE id = ?",
+            (new_title, new_title, now_iso(), document_id),
         )
 
 
