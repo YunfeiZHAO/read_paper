@@ -10,6 +10,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "anthropic",
     "python-dotenv",
+    "PyJWT",
 ]
 
 # Needed only by the Codex backend; not required for Claude-only use.

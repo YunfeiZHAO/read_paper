@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Dict
 
 # BASE_DIR points at the directory that holds templates/ and static/. Normally that's the
 # repository root (the parent of the app/ package), so paths stay stable regardless of where
@@ -112,3 +113,25 @@ TEXT_PREVIEW_EXTENSIONS = {
     ".yaml",
     ".yml",
 }
+
+# ── Authentication ──────────────────────────────────────────────────────
+# Multiple users via environment variable:
+# AUTH_USERS=user1@example.com:password1,user2@example.com:password2
+AUTH_USERS: Dict[str, str] = {}
+
+# Parse AUTH_USERS
+auth_users_env = os.environ.get("AUTH_USERS", "").strip()
+if auth_users_env:
+    for user_pair in auth_users_env.split(","):
+        user_pair = user_pair.strip()
+        if ":" in user_pair:
+            email, password = user_pair.split(":", 1)
+            AUTH_USERS[email.strip()] = password.strip()
+
+AUTH_ENABLED = bool(AUTH_USERS)
+
+# Session secret for JWT token signing
+AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "").strip()
+if not AUTH_SECRET_KEY and AUTH_ENABLED:
+    AUTH_SECRET_KEY = "default-dev-secret-key-change-in-production"
+AUTH_SESSION_TIMEOUT_SECONDS = int(os.environ.get("AUTH_SESSION_TIMEOUT_SECONDS", "86400"))  # 24 hours

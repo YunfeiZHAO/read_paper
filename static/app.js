@@ -4085,7 +4085,126 @@ applyTopbarFold();
 wireEvents();
 renderPanes();
 
-(async () => {
+// ── Authentication ─────────────────────────────────────────────────────
+
+let authEnabled = false;
+let authenticated = false;
+
+async function checkAuthStatus() {
+  try {
+    const response = await fetch("/api/auth/status");
+    const data = await response.json();
+    authEnabled = data.auth_enabled;
+    
+    if (authEnabled) {
+      await verifyAuthentication();
+    }
+  } catch (err) {
+    console.error("Failed to check auth status:", err);
+  }
+}
+
+async function verifyAuthentication() {
+  try {
+    const response = await fetch("/api/auth/verify");
+    const data = await response.json();
+    authenticated = data.authenticated;
+    
+    if (!authenticated) {
+      showLoginScreen();
+    }
+  } catch (err) {
+    console.error("Failed to verify authentication:", err);
+    authenticated = false;
+    showLoginScreen();
+  }
+}
+
+function showLoginScreen() {
+  const loginScreen = document.getElementById("loginScreen");
+  const appContent = document.getElementById("appContent");
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (loginScreen && appContent) {
+    loginScreen.style.display = "flex";
+    appContent.style.display = "none";
+  }
+  if (logoutBtn) {
+    logoutBtn.style.display = "none";
+  }
+}
+
+function hideLoginScreen() {
+  const loginScreen = document.getElementById("loginScreen");
+  const appContent = document.getElementById("appContent");
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (loginScreen && appContent) {
+    loginScreen.style.display = "none";
+    appContent.style.display = "block";
+  }
+  if (logoutBtn && authEnabled) {
+    logoutBtn.style.display = "block";
+  }
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  
+  const email = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value.trim();
+  const errorDiv = document.getElementById("loginError");
+  const submitBtn = document.getElementById("loginSubmitBtn");
+  
+  if (!email || !password) {
+    errorDiv.textContent = "Email and password are required";
+    errorDiv.style.display = "block";
+    return;
+  }
+  
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Signing in...";
+  errorDiv.style.display = "none";
+  
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.detail || "Login failed");
+    }
+    
+    authenticated = true;
+    hideLoginScreen();
+    document.getElementById("loginEmail").value = "";
+    document.getElementById("loginPassword").value = "";
+    
+    // Refresh the app data
+    await fetchTree();
+  } catch (err) {
+    errorDiv.textContent = err.message || "Login failed. Please check your credentials.";
+    errorDiv.style.display = "block";
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Sign In";
+  }
+}
+
+async function handleLogout() {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+    authenticated = false;
+    showLoginScreen();
+    document.getElementById("loginEmail").value = "";
+    document.getElementById("loginPassword").value = "";
+  } catch (err) {
+    console.error("Logout failed:", err);
+  }
+}
+
+async function setupApp() {
   try {
     // With no hash, restore the last location you were at; otherwise default to home.
     if (!location.hash) {
@@ -4104,6 +4223,34 @@ renderPanes();
     console.error(err);
     navigate("home");
   }
-})();
+  
+  setInterval(pollIfNeeded, 2500);
+}
 
-setInterval(pollIfNeeded, 2500);
+// Initialize authentication on page load
+document.addEventListener("DOMContentLoaded", async () => {
+  // Setup login form and logout button handlers first
+  const loginForm = document.getElementById("loginForm");
+  if (loginForm) loginForm.addEventListener("submit", handleLogin);
+  
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (logoutBtn) logoutBtn.addEventListener("click", handleLogout);
+  
+  // Check authentication status
+  await checkAuthStatus();
+  
+  if (authEnabled && authenticated) {
+    // Auth is enabled and user is authenticated, load the app
+    hideLoginScreen();
+    setupApp();
+  } else if (authEnabled) {
+    // Auth is enabled but user is not authenticated, show login screen
+    showLoginScreen();
+  } else {
+    // Auth is disabled, load the app
+    hideLoginScreen();
+    setupApp();
+  }
+});
+
+

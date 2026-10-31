@@ -4,9 +4,10 @@ from __future__ import annotations
 import mimetypes
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Cookie, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+from .auth import AUTH_ENABLED, create_session_token, verify_credentials, verify_session_token
 from .config import (
     BACKENDS,
     BASE_DIR,
@@ -63,6 +64,82 @@ router = APIRouter()
 INDEX_HTML = BASE_DIR / "templates" / "index.html"
 
 
+def _require_auth(request: Request) -> None:
+    """Check if authentication is enabled and verify the session token."""
+    if not AUTH_ENABLED:
+        return
+    
+    auth_token = request.cookies.get("auth_token")
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    email = verify_session_token(auth_token)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+
+# ── Authentication endpoints ────────────────────────────────────────────
+
+@router.get("/api/auth/status")
+def api_auth_status() -> Dict[str, Any]:
+    """Return authentication status."""
+    return {"auth_enabled": AUTH_ENABLED}
+
+
+@router.post("/api/auth/login")
+async def api_auth_login(request: Request) -> JSONResponse:
+    """Login endpoint: verify credentials and return session token."""
+    if not AUTH_ENABLED:
+        raise HTTPException(status_code=403, detail="Authentication is not enabled")
+    
+    payload = await _json_body(request)
+    email = str(payload.get("email") or "").strip()
+    password = str(payload.get("password") or "").strip()
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+    
+    if not verify_credentials(email, password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    token = create_session_token(email)
+    response = JSONResponse({"message": "Login successful", "email": email}, status_code=200)
+    response.set_cookie(
+        key="auth_token",
+        value=token,
+        httponly=True,
+        secure=False,  # Set to True in production with HTTPS
+        samesite="lax",
+        max_age=86400,  # 24 hours
+    )
+    return response
+
+
+@router.post("/api/auth/logout")
+def api_auth_logout() -> JSONResponse:
+    """Logout endpoint: clear session token."""
+    response = JSONResponse({"message": "Logout successful"})
+    response.delete_cookie(key="auth_token")
+    return response
+
+
+@router.get("/api/auth/verify")
+def api_auth_verify(request: Request) -> Dict[str, Any]:
+    """Verify if the current session is valid."""
+    if not AUTH_ENABLED:
+        return {"authenticated": True}
+    
+    auth_token = request.cookies.get("auth_token")
+    if not auth_token:
+        return {"authenticated": False}
+    
+    email = verify_session_token(auth_token)
+    if email:
+        return {"authenticated": True, "email": email}
+    
+    return {"authenticated": False}
+
+
 @router.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
@@ -74,8 +151,9 @@ def favicon() -> Response:
 
 
 @router.get("/api/tree")
-def api_tree() -> Dict[str, Any]:
+def api_tree(request: Request) -> Dict[str, Any]:
     """Return every node and file in the database (the frontend's initial tree load)."""
+    _require_auth(request)
     with DB_LOCK, db_connection() as conn:
         node_rows = conn.execute("SELECT * FROM nodes ORDER BY created_at").fetchall()
         file_rows = conn.execute("SELECT * FROM files ORDER BY created_at DESC").fetchall()
@@ -93,6 +171,7 @@ async def api_ask(request: Request) -> JSONResponse:
     Returns 202 immediately with the created node; the answer streams in later and the
     frontend polls /api/tree to see the node move queued → running → done/failed.
     """
+    _require_auth(request)
     payload = await _json_body(request)
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
@@ -141,10 +220,12 @@ async def api_ask(request: Request) -> JSONResponse:
 
 @router.post("/api/upload")
 async def api_upload(
+    request: Request,
     files: Optional[List[UploadFile]] = File(None),
     file: Optional[List[UploadFile]] = File(None),
     workspace_id: str = Form(""),
 ) -> JSONResponse:
+    _require_auth(request)
     uploaded = files or file or []
     if not uploaded:
         raise HTTPException(status_code=400, detail="No file received")
@@ -161,7 +242,8 @@ async def api_upload(
 
 
 @router.get("/api/files/{file_id}/download")
-def api_download_file(file_id: str) -> Any:
+def api_download_file(request: Request, file_id: str) -> Any:
+    _require_auth(request)
     item = get_file(file_id)
     if not item:
         raise HTTPException(status_code=404, detail="File does not exist")
@@ -172,12 +254,14 @@ def api_download_file(file_id: str) -> Any:
 
 
 @router.get("/api/workspaces")
-def api_list_workspaces(include_archived: str = "") -> Dict[str, Any]:
+def api_list_workspaces(request: Request, include_archived: str = "") -> Dict[str, Any]:
+    _require_auth(request)
     return {"workspaces": list_workspaces(include_archived=str(include_archived or "") == "1")}
 
 
 @router.post("/api/workspaces")
 async def api_create_workspace(request: Request) -> JSONResponse:
+    _require_auth(request)
     payload = await _json_body(request)
     title = str(payload.get("title") or "").strip()
     if not title:
@@ -188,7 +272,8 @@ async def api_create_workspace(request: Request) -> JSONResponse:
 
 
 @router.get("/api/workspaces/{workspace_id}")
-def api_get_workspace(workspace_id: str) -> Dict[str, Any]:
+def api_get_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     ws = get_workspace(workspace_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace does not exist")
@@ -202,6 +287,7 @@ def api_get_workspace(workspace_id: str) -> Dict[str, Any]:
 
 @router.patch("/api/workspaces/{workspace_id}")
 async def api_patch_workspace(workspace_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_workspace(workspace_id):
         raise HTTPException(status_code=404, detail="Workspace does not exist")
     payload = await _json_body(request)
@@ -234,7 +320,8 @@ async def api_patch_workspace(workspace_id: str, request: Request) -> Dict[str, 
 
 
 @router.delete("/api/workspaces/{workspace_id}")
-def api_delete_workspace(workspace_id: str) -> Dict[str, Any]:
+def api_delete_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_workspace(workspace_id):
         raise HTTPException(status_code=404, detail="Workspace does not exist")
     result = delete_workspace(workspace_id)
@@ -246,11 +333,13 @@ def api_delete_workspace(workspace_id: str) -> Dict[str, Any]:
 
 @router.post("/api/documents")
 async def api_create_document(
+    request: Request,
     file: UploadFile = File(...),
     title: str = Form(""),
     num_pages: Optional[int] = Form(None),
     workspace_id: str = Form(""),
 ) -> JSONResponse:
+    _require_auth(request)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file received")
     workspace_id = (workspace_id or "").strip() or None
@@ -268,12 +357,14 @@ async def api_create_document(
 
 
 @router.get("/api/documents")
-def api_list_documents(workspace_id: str = "") -> Dict[str, Any]:
+def api_list_documents(request: Request, workspace_id: str = "") -> Dict[str, Any]:
+    _require_auth(request)
     return {"documents": list_documents((workspace_id or "").strip() or None)}
 
 
 @router.get("/api/documents/{document_id}")
-def api_get_document(document_id: str) -> Dict[str, Any]:
+def api_get_document(request: Request, document_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     doc = get_document(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document does not exist")
@@ -288,6 +379,7 @@ def api_get_document(document_id: str) -> Dict[str, Any]:
 @router.patch("/api/documents/{document_id}")
 async def api_update_document(document_id: str, request: Request) -> Dict[str, Any]:
     """Update a document's title and rename the file on disk."""
+    _require_auth(request)
     if not get_document(document_id):
         raise HTTPException(status_code=404, detail="Document does not exist")
     
@@ -305,7 +397,8 @@ async def api_update_document(document_id: str, request: Request) -> Dict[str, A
 
 
 @router.delete("/api/documents/{document_id}")
-def api_delete_document(document_id: str) -> Dict[str, Any]:
+def api_delete_document(request: Request, document_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_document(document_id):
         raise HTTPException(status_code=404, detail="Document does not exist")
     result = delete_document(document_id)
@@ -313,7 +406,8 @@ def api_delete_document(document_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/documents/{document_id}/file")
-def api_document_file(document_id: str) -> Any:
+def api_document_file(request: Request, document_id: str) -> Any:
+    _require_auth(request)
     doc = get_document(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document does not exist")
@@ -328,7 +422,8 @@ def api_document_file(document_id: str) -> Any:
 
 
 @router.get("/api/documents/{document_id}/highlights")
-def api_list_highlights(document_id: str) -> Dict[str, Any]:
+def api_list_highlights(request: Request, document_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_document(document_id):
         raise HTTPException(status_code=404, detail="Document does not exist")
     return {"highlights": list_highlights(document_id)}
@@ -336,6 +431,7 @@ def api_list_highlights(document_id: str) -> Dict[str, Any]:
 
 @router.post("/api/documents/{document_id}/highlights")
 async def api_create_highlight(document_id: str, request: Request) -> JSONResponse:
+    _require_auth(request)
     if not get_document(document_id):
         raise HTTPException(status_code=404, detail="Document does not exist")
     payload = await _json_body(request)
@@ -357,6 +453,7 @@ async def api_create_highlight(document_id: str, request: Request) -> JSONRespon
 
 @router.patch("/api/highlights/{highlight_id}")
 async def api_patch_highlight(highlight_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_highlight(highlight_id):
         raise HTTPException(status_code=404, detail="Highlight does not exist")
     payload = await _json_body(request)
@@ -370,7 +467,8 @@ async def api_patch_highlight(highlight_id: str, request: Request) -> Dict[str, 
 
 
 @router.delete("/api/highlights/{highlight_id}")
-def api_delete_highlight(highlight_id: str) -> Dict[str, Any]:
+def api_delete_highlight(request: Request, highlight_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     if not delete_highlight(highlight_id):
         raise HTTPException(status_code=404, detail="Highlight does not exist")
     return {"deleted": True}
@@ -380,13 +478,15 @@ def api_delete_highlight(highlight_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/workspace/files")
-def api_workspace_files(node_id: str = "") -> Dict[str, Any]:
+def api_workspace_files(request: Request, node_id: str = "") -> Dict[str, Any]:
+    _require_auth(request)
     node_id = (node_id or "").strip() or None
     return {"root": str(WORK_DIR), "files": workspace_files_for_node(node_id)}
 
 
 @router.get("/api/workspace/content")
-def api_workspace_content(path: str = "") -> Dict[str, Any]:
+def api_workspace_content(request: Request, path: str = "") -> Dict[str, Any]:
+    _require_auth(request)
     try:
         resolved = resolve_workspace_file(str(path or ""))
     except FileNotFoundError as exc:
@@ -408,7 +508,8 @@ def api_workspace_content(path: str = "") -> Dict[str, Any]:
 
 
 @router.get("/api/workspace/file")
-def api_workspace_file(path: str = "", download: str = "") -> Any:
+def api_workspace_file(request: Request, path: str = "", download: str = "") -> Any:
+    _require_auth(request)
     try:
         resolved = resolve_workspace_file(str(path or ""))
     except FileNotFoundError as exc:
@@ -429,6 +530,7 @@ def api_workspace_file(path: str = "", download: str = "") -> Any:
 
 @router.patch("/api/nodes/{node_id}/note")
 async def api_patch_node_note(node_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_node(node_id):
         raise HTTPException(status_code=404, detail="Node does not exist")
     payload = await _json_body(request)
@@ -441,6 +543,7 @@ async def api_patch_node_note(node_id: str, request: Request) -> Dict[str, Any]:
 
 @router.post("/api/nodes/{node_id}/note/append")
 async def api_append_node_note(node_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_node(node_id):
         raise HTTPException(status_code=404, detail="Node does not exist")
     payload = await _json_body(request)
@@ -467,13 +570,15 @@ def _require_note_target(kind: str, target_id: str) -> None:
 
 
 @router.get("/api/notes/{kind}/{target_id}")
-def api_get_note(kind: str, target_id: str) -> Dict[str, Any]:
+def api_get_note(request: Request, kind: str, target_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     _require_note_target(kind, target_id)
     return {"note": notes.get_note(kind, target_id)}
 
 
 @router.put("/api/notes/{kind}/{target_id}")
 async def api_put_note(kind: str, target_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
     _require_note_target(kind, target_id)
     payload = await _json_body(request)
     md = payload.get("md", "")
@@ -483,13 +588,15 @@ async def api_put_note(kind: str, target_id: str, request: Request) -> Dict[str,
 
 
 @router.delete("/api/notes/{kind}/{target_id}")
-def api_delete_note(kind: str, target_id: str) -> Dict[str, Any]:
+def api_delete_note(request: Request, kind: str, target_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     _require_note_target(kind, target_id)
     return {"deleted": notes.delete_note(kind, target_id)}
 
 
 @router.get("/api/projects/{project_id}/notes")
-def api_project_notes(project_id: str) -> Dict[str, Any]:
+def api_project_notes(request: Request, project_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     project = get_node(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project does not exist")
@@ -508,13 +615,14 @@ def api_project_notes(project_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/documents/{document_id}/notes")
-def api_document_notes(document_id: str) -> Dict[str, Any]:
+def api_document_notes(request: Request, document_id: str) -> Dict[str, Any]:
     """Every marked part of a PDF — node notes, highlight notes, and the bare highlights
     with no note yet — each carrying the highlight it anchors to (a node note anchors to
     the node's source highlight) so the reader can jump the PDF viewer to where it was
     marked. Items without a note carry an empty ``md`` and ``has_note=False`` so the list
     reads as the full record of interesting parts marked in the paper. Ordered by page,
     then time."""
+    _require_auth(request)
     document = get_document(document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document does not exist")
@@ -587,6 +695,7 @@ def api_document_notes(document_id: str) -> Dict[str, Any]:
 
 @router.patch("/api/nodes/{node_id}")
 async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
     if not get_node(node_id):
         raise HTTPException(status_code=404, detail="Node does not exist")
     payload = await _json_body(request)
@@ -604,7 +713,8 @@ async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
 
 
 @router.delete("/api/nodes/{node_id}")
-def api_delete_node(node_id: str) -> Dict[str, Any]:
+def api_delete_node(request: Request, node_id: str) -> Dict[str, Any]:
+    _require_auth(request)
     node = get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail="Node does not exist")
@@ -687,7 +797,8 @@ def api_delete_node(node_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/export/{node_id}")
-def api_export(node_id: str) -> Response:
+def api_export(request: Request, node_id: str) -> Response:
+    _require_auth(request)
     try:
         markdown = export_subtree_markdown(node_id)
     except ValueError as exc:

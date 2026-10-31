@@ -1981,6 +1981,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
@@ -2019,6 +2020,7 @@ requires-dist = [
     { name = "pdfplumber", marker = "extra == 'tools'" },
     { name = "pillow", marker = "extra == 'tools'" },
     { name = "pyinstaller", marker = "extra == 'desktop'", specifier = ">=6" },
+    { name = "pyjwt" },
     { name = "pymupdf", marker = "extra == 'tools'" },
     { name = "pypdf", marker = "extra == 'tools'" },
     { name = "python-dotenv" },
