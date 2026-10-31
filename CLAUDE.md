@@ -53,7 +53,7 @@ The web layer is **FastAPI** (`app/__init__.py` builds the app, `app/routes.py` 
 unchanged by the framework choice. `app/uploads.py` has its own `secure_filename` (no werkzeug).
 
 ### Data model
-Everything lives in one SQLite DB (`instance/codex_qa.sqlite`, path overridable via `CODEX_QA_DATA_DIR`):
+Everything lives in one SQLite DB (`instance/qa.sqlite`, path overridable via `QA_DATA_DIR`, or the legacy `CODEX_QA_DATA_DIR`):
 - `documents` — one row per uploaded PDF (the top-level object / "project"). Links to its stored `files` row via `file_id`; a document owns its highlights and its question tree (nodes carry `document_id`).
 - `highlights` — one row per saved PDF highlight: `document_id`, `page` (0-based), `rects_json` (array of **normalized** `{x,y,w,h}` page-fraction rects, so anchors survive reload/zoom), `quote`, `color`, and a nullable `node_id` (set when a question is asked from that highlight). Saving a highlight never creates a node.
 - `nodes` — one row per Q&A turn. Self-referencing `parent_id` forms the tree; `document_id` scopes a node to its PDF and `source_highlight_id` links back to the highlight a question was asked from. Holds prompt, answer, status (`queued` → `running` → `done`/`failed`), token usage, tool-call count, raw JSONL events (`raw_events_json`, trimmed for storage), and a per-node freeform `note_md`.

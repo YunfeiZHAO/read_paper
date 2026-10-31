@@ -1,6 +1,6 @@
 """Shared fixtures: point the data directory at a temp dir so tests never touch the real instance/.
 
-Important: config reads CODEX_QA_DATA_DIR at import time and fixes the DB/work-dir paths then,
+Important: config reads QA_DATA_DIR at import time and fixes the DB/work-dir paths then,
 so the env var must be set **before any app module is imported**. We pin a process-level temp
 directory before importing app, and the fixtures rebuild a clean database as needed.
 """
@@ -13,8 +13,9 @@ from pathlib import Path
 import pytest
 
 # Pin the data directory to a temp location before importing app.
+# Use the new QA_DATA_DIR variable name (legacy CODEX_QA_DATA_DIR also supported).
 _TMP_DATA_DIR = tempfile.mkdtemp(prefix="treeqa-tests-")
-os.environ["CODEX_QA_DATA_DIR"] = _TMP_DATA_DIR
+os.environ["QA_DATA_DIR"] = _TMP_DATA_DIR
 # Tests default to web search off (matching production); individual tests monkeypatch as needed.
 os.environ.setdefault("ENABLE_WEB_SEARCH", "false")
 

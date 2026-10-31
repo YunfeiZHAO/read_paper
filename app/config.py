@@ -14,7 +14,7 @@ from pathlib import Path
 # repository root (the parent of the app/ package), so paths stay stable regardless of where
 # Python is launched. When frozen by PyInstaller, the bundled data files are extracted under
 # sys._MEIPASS, so BASE_DIR points there instead. (The writable DATA_DIR is kept separate and
-# is driven by CODEX_QA_DATA_DIR, which the desktop launcher sets before import.)
+# is driven by QA_DATA_DIR, which the desktop launcher sets before import.)
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     BASE_DIR = Path(sys._MEIPASS)  # type: ignore[attr-defined]
 else:
@@ -39,8 +39,10 @@ except ImportError:
 import anthropic  # noqa: E402,F401  -- imported after .env load, re-exported for runners
 
 # ── Paths ───────────────────────────────────────────────────────────────
-DATA_DIR = Path(os.environ.get("CODEX_QA_DATA_DIR", BASE_DIR / "instance"))
-DB_PATH = DATA_DIR / "codex_qa.sqlite"
+# Support both QA_DATA_DIR (new) and CODEX_QA_DATA_DIR (legacy) for backward compatibility
+_qa_data_dir = os.environ.get("QA_DATA_DIR") or os.environ.get("CODEX_QA_DATA_DIR")
+DATA_DIR = Path(_qa_data_dir) if _qa_data_dir else BASE_DIR / "instance"
+DB_PATH = DATA_DIR / "qa.sqlite"
 WORK_DIR = Path(os.environ.get("CODEX_QA_WORKDIR", DATA_DIR / "workspace"))
 UPLOAD_DIR = WORK_DIR / "uploads"
 RUN_DIR = DATA_DIR / "runs"

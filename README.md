@@ -42,6 +42,64 @@ The `tools` extra is optional convenience: it pre-installs PDF/image/web librari
 `bash` tool often reaches for (PyMuPDF, pdfplumber, pypdf, Pillow, requests, beautifulsoup4, lxml)
 so runs don't pause to install them on the fly. The app never imports them itself.
 
+## Deploy with Docker Compose / Dokploy
+
+The Docker image includes both the Claude and Codex backends, plus the `tools` extra.
+It runs as a non-root user with a single Uvicorn worker on port **8080**, without
+development reload. SQLite, uploaded PDFs, notes, run logs, and workspace files are
+stored in the persistent `app-data` named volume mounted at `/app/instance`, which
+is the app's normal `instance/` data directory. Local data from `instance/` is not
+automatically migrated. Credentials and local files are excluded from the image's build
+context.
+
+### Dokploy
+
+1. Create a **Docker Compose** service in your Dokploy project.
+2. Select this Git repository and the branch containing these files. Set the Compose
+   path to `docker-compose.yml` and use **Docker Compose**, not Docker Stack.
+3. In **Environment**, set `ANTHROPIC_API_KEY` for the official Claude API, or
+   `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` for a custom gateway. Dokploy writes
+   these to `.env`; the Compose service loads them using `env_file`. You can also
+   configure credentials per workspace instead. For Codex, set `SUB_POOL_URL` and
+   `SUB_POOL_KEY`; the pool must be reachable from inside the container
+   (`localhost` refers to the container, not the Dokploy host).
+4. Deploy, then add a domain targeting service **`app`**, container port **`8080`**,
+   with HTTPS enabled. The service joins Dokploy's existing external `dokploy-network`
+   so its proxy can reach the app; no host port or hard-coded Traefik labels are required.
+5. Configure backups for the `app-data` volume. Stop the service before taking a
+   filesystem backup to keep SQLite and its associated files consistent. Do not delete
+   the volume when redeploying.
+
+**Protect access before exposing the domain.** This app has no built-in login, and its
+AI backends can execute shell commands inside the container. Put it behind a VPN or an
+authenticated reverse proxy and restrict access to trusted users. Do not mount the
+Docker socket or sensitive host directories. Containerization does not provide
+per-user isolation.
+
+### Local Docker Compose
+
+Create `.env` from `.env.example` and configure your credentials, then run:
+
+```bash
+docker compose up -d --build --wait
+docker compose logs -f app
+```
+
+The default Compose file only exposes the internal port for Dokploy's proxy. To access
+it locally without a proxy, first create the shared network if it does not already exist:
+
+```bash
+docker network create dokploy-network
+docker compose build
+docker compose run --rm --service-ports -p 127.0.0.1:8080:8080 app
+```
+
+Open `http://127.0.0.1:8080`. `docker compose down` preserves data;
+`docker compose down -v` **deletes it**. The container always binds to port 8080;
+the development-only `HOST`, `PORT`, and `APP_RELOAD` settings do not change its command.
+To pin the Codex CLI version, set `build.args.CODEX_VERSION` in the Compose service;
+otherwise each uncached image build installs the latest release.
+
 ## Configure
 
 Copy `.env.example` to `.env` and fill in the backend you want (it loads automatically).
@@ -80,7 +138,7 @@ Common environment variables (see `.env.example` for the full list):
 | `SUB_POOL_URL` / `SUB_POOL_KEY` | credentials for the `sub-pool-client` that leases a Codex account per request |
 | `PORT` / `HOST` | server bind address (default `8080` / `0.0.0.0`) |
 | `APP_RELOAD` | set to `1` to enable uvicorn auto-reload during development |
-| `CODEX_QA_DATA_DIR` | override the directory holding the SQLite DB and workspace files |
+| `QA_DATA_DIR` | override the directory holding the SQLite DB and workspace files (legacy `CODEX_QA_DATA_DIR` also supported) |
 
 ### Backends
 
@@ -123,8 +181,8 @@ Each platform's binary must be built on that platform (use a CI matrix to produc
 
 ## Data
 
-Everything lives in one SQLite database at `instance/codex_qa.sqlite` (override the directory
-with `CODEX_QA_DATA_DIR`). Uploaded PDFs and attachments are stored under
+Everything lives in one SQLite database at `instance/qa.sqlite` (override the directory
+with `QA_DATA_DIR`, or the legacy `CODEX_QA_DATA_DIR`). Uploaded PDFs and attachments are stored under
 `instance/workspace/uploads/`, and the rest of `instance/workspace/` is a scratch directory the
 AI can read and write; files it changes are attributed back to the node that produced them and
 surfaced in the reader's workspace-files tab. See

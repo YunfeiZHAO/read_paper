@@ -1,7 +1,7 @@
 # Database Schema — PDF Tree QA
 
 The web app stores everything in one SQLite database:
-`instance/codex_qa.sqlite` (override the directory with `CODEX_QA_DATA_DIR`).
+`instance/qa.sqlite` (override the directory with `QA_DATA_DIR`, or the legacy `CODEX_QA_DATA_DIR`).
 The schema is defined in [app/db.py](../app/db.py) (`init_db()`).
 
 ## Mental model
@@ -83,6 +83,7 @@ a question from it.
 | column | type | notes |
 |---|---|---|
 | `id` | TEXT PK | uuid hex |
+| `workspace_id` | TEXT FK → `workspaces.id` | groups documents into workspaces (nullable) |
 | `file_id` | TEXT FK → `files.id` | the stored PDF |
 | `title` | TEXT | display title (defaults to original name) |
 | `original_name` | TEXT | uploaded filename |
@@ -90,6 +91,8 @@ a question from it.
 | `archived` | INTEGER | 0/1 soft-delete flag |
 | `created_at` / `updated_at` | TEXT | ISO timestamps |
 | `last_opened_at` | TEXT | drives recency sort in the document list |
+
+Indexes: `idx_documents_workspace_id`.
 
 ### `highlights` — saved PDF selections
 | column | type | notes |
@@ -110,26 +113,27 @@ Index: `idx_highlights_document_id`.
 |---|---|---|
 | `id` | TEXT PK | uuid hex |
 | `parent_id` | TEXT FK → `nodes.id` | **self-reference** — forms the tree; null at a root |
-| `document_id` | TEXT FK → `documents.id` | scopes the node to its PDF |
+| `document_id` | TEXT FK → `documents.id` | scopes the node to its PDF (nullable on legacy nodes) |
 | `source_highlight_id` | TEXT | the highlight this question was asked from (nullable) |
 | `title` | TEXT | compacted from the prompt |
 | `prompt` | TEXT | the question |
 | `answer` | TEXT | LLM answer (default `''`) |
 | `status` | TEXT | `queued` → `running` → `done` / `failed` |
-| `backend` | TEXT | `'codex'` or `'claude'` |
-| `enable_web_search` | INTEGER | 0/1 |
-| `codex_session_id` | TEXT | for resume |
-| `model`, `cwd` | TEXT | |
-| `prompt_tokens` / `completion_tokens` / `total_tokens` | INTEGER | usage |
-| `tools_count` | INTEGER | number of tool calls |
-| `attachments_json` | TEXT | JSON array of attached files |
-| `workspace_refs_json` | TEXT | JSON array of workspace references |
-| `note_md` | TEXT | per-node freeform markdown notes |
-| `raw_events_json` | TEXT | raw JSONL events from the run (trimmed for storage) |
-| `error` | TEXT | failure message |
-| `archived` / `bookmarked` | INTEGER | 0/1 flags |
+| `backend` | TEXT | `'codex'` or `'claude'` (default `'codex'`) |
+| `enable_web_search` | INTEGER | 0/1 flag to enable web search (default `0`) |
+| `codex_session_id` | TEXT | for resume with Codex CLI (nullable) |
+| `model` | TEXT | model name used for the run (nullable) |
+| `cwd` | TEXT | working directory for the run (nullable) |
+| `prompt_tokens` / `completion_tokens` / `total_tokens` | INTEGER | token usage (default `0`) |
+| `tools_count` | INTEGER | number of tool calls made (default `0`) |
+| `attachments_json` | TEXT | JSON array of attached files (default `'[]'`) |
+| `workspace_refs_json` | TEXT | JSON array of workspace file references (default `'[]'`) |
+| `note_md` | TEXT | per-node freeform markdown notes (default `''`) |
+| `raw_events_json` | TEXT | raw JSONL events from the run, trimmed for storage (default `'[]'`) |
+| `error` | TEXT | failure message (nullable) |
+| `archived` / `bookmarked` | INTEGER | 0/1 flags (default `0`) |
 | `created_at` / `updated_at` | TEXT | ISO timestamps |
-| `completed_at` | TEXT | nullable |
+| `completed_at` | TEXT | when the run finished (nullable) |
 
 Indexes: `idx_nodes_parent_id`, `idx_nodes_status`, `idx_nodes_document_id`.
 
@@ -137,6 +141,7 @@ Indexes: `idx_nodes_parent_id`, `idx_nodes_status`, `idx_nodes_document_id`.
 | column | type | notes |
 |---|---|---|
 | `id` | TEXT PK | uuid hex |
+| `workspace_id` | TEXT FK → `workspaces.id` | groups files into workspaces (nullable) |
 | `original_name` | TEXT | uploaded name |
 | `stored_name` | TEXT | sanitized name on disk |
 | `path` | TEXT | `instance/workspace/uploads/<file_id>/...` |
@@ -145,7 +150,7 @@ Indexes: `idx_nodes_parent_id`, `idx_nodes_status`, `idx_nodes_document_id`.
 | `text_excerpt` | TEXT | extracted text preview (nullable) |
 | `created_at` | TEXT | ISO timestamp |
 
-Index: `idx_files_created_at`.
+Indexes: `idx_files_created_at`, `idx_files_workspace_id`.
 
 ### `node_workspace_files` — files a run changed (legacy plumbing)
 | column | type | notes |
@@ -166,22 +171,49 @@ workspace-files side tab.
 |---|---|---|
 | `id` | TEXT PK | uuid hex |
 | `title` | TEXT | display name |
-| `description` | TEXT | optional |
+| `description` | TEXT | optional; default `''` |
 | `archived` | INTEGER | 0/1 soft-delete flag |
 | `created_at` / `updated_at` | TEXT | ISO timestamps |
-| `last_opened_at` | TEXT | drives recency sort on the home page |
+| `last_opened_at` | TEXT | drives recency sort on the home page; nullable |
+| `api_base_url` | TEXT | per-workspace Claude API endpoint (nullable; falls back to env default) |
+| `api_key` | TEXT | per-workspace API key (nullable; falls back to env default) |
+| `api_auth_type` | TEXT | auth type for per-workspace settings (nullable; falls back to env default) |
+| `api_model` | TEXT | per-workspace model override (nullable; falls back to env default) |
 
 `documents.workspace_id` and `files.workspace_id` reference this table. Index:
 `idx_workspaces_archived`.
 
+### `notes` — file-backed notes for nodes and highlights
+| column | type | notes |
+|---|---|---|
+| `id` | TEXT PK | uuid hex |
+| `kind` | TEXT | `'node'` or `'highlight'` — the type of target |
+| `target_id` | TEXT | `nodes.id` or `highlights.id` — the associated node or highlight |
+| `rel_path` | TEXT | relative path to the `.md` file within `NOTES_DIR` |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+
+PK: `id`. Unique constraint: `(kind, target_id)` — one note per target (editing upserts).
+The Markdown body itself lives on disk at `NOTES_DIR/<rel_path>`; this table only tracks
+which node/highlight a note belongs to. Index: `idx_notes_target`.
+
 ## Notes on migrations
 
 `init_db()` is idempotent (`CREATE TABLE IF NOT EXISTS`) and additionally runs
-`ALTER TABLE` guards for columns added after the original schema
-(`workspace_refs_json`, `note_md`, `backend`, `enable_web_search`,
-`document_id`, `source_highlight_id` on `nodes`; `workspace_id` on `documents`/`files`).
+`ALTER TABLE` guards for columns added after the original schema:
+
+**On `nodes`:**
+- `workspace_refs_json`, `note_md`, `backend`, `enable_web_search` (all added together)
+- `document_id`, `source_highlight_id` (added together in a later migration)
+
+**On `documents` and `files`:**
+- `workspace_id` (both tables, added together)
+
+**On `workspaces`:**
+- `api_base_url`, `api_key`, `api_auth_type`, `api_model` (per-workspace LLM settings, added together)
+
 Indexes that depend on an added column (e.g. `idx_nodes_document_id`,
-`idx_documents_workspace_id`) are created *after* the corresponding ALTER so old databases
-upgrade cleanly. Older databases may still carry retired columns
-(`account_name`/`account_path`/`account_reason`) or tables (`account_usage`/`account_probe`);
-they are simply ignored.
+`idx_documents_workspace_id`, `idx_files_workspace_id`) are created *after* the 
+corresponding ALTER so old databases upgrade cleanly. 
+
+Older databases may still carry retired columns (`account_name`/`account_path`/`account_reason`) 
+or tables (`account_usage`/`account_probe`); they are simply ignored.

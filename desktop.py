@@ -53,11 +53,12 @@ def _wait_until_up(url: str, timeout: float = 30.0) -> bool:
 
 
 def main() -> int:
-    # Must be set BEFORE importing the app: app.config reads CODEX_QA_DATA_DIR at import time.
-    if not os.environ.get("CODEX_QA_DATA_DIR"):
+    # Must be set BEFORE importing the app: app.config reads QA_DATA_DIR at import time.
+    # Support both QA_DATA_DIR (new) and CODEX_QA_DATA_DIR (legacy) for backward compatibility.
+    if not os.environ.get("QA_DATA_DIR") and not os.environ.get("CODEX_QA_DATA_DIR"):
         data_dir = _default_data_dir()
         data_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["CODEX_QA_DATA_DIR"] = str(data_dir)
+        os.environ["QA_DATA_DIR"] = str(data_dir)
 
     import uvicorn
     import webview  # pywebview

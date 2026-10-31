@@ -117,7 +117,7 @@ read_paper/
 │   ├── app.js              # all frontend logic (vanilla JS, SVG tree, no framework)
 │   └── styles.css
 ├── instance/               # runtime data (SQLite, workspace, uploads)
-│   ├── codex_qa.sqlite
+│   ├── qa.sqlite
 │   └── workspace/          # shared scratch dir the AI can read/write
 │       └── uploads/        # user-uploaded attachments
 └── cli/                    # standalone treeflow CLI (unrelated to the above)
