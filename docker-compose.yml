@@ -23,7 +23,7 @@ services:
     networks:
       - dokploy-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/workspaces', timeout=5).close()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/auth/status', timeout=5).close()"]
       interval: 30s
       timeout: 10s
       start_period: 20s
