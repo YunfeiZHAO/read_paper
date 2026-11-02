@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .db import get_files, path_to_node
+from .db import get_files, get_highlight, path_to_node
 from .utils import indent_block
 
 
@@ -129,3 +129,24 @@ def build_prompt(
         ]
     )
     return "\n".join(lines)
+
+
+def build_prompt_for_node(node: Dict[str, Any]) -> str:
+    """Build the full self-contained prompt for an existing node dict.
+
+    Factors out what the Claude/Codex runners do before calling build_prompt(): resolve the
+    node's attachment files and its source-highlight quote. Used by the "local" backend, whose
+    prompt is built on the server and handed to the browser (the browser can't walk the tree).
+    """
+    files = get_files([item["id"] for item in node.get("attachments", [])])
+    quote = ""
+    if node.get("source_highlight_id"):
+        hl = get_highlight(node["source_highlight_id"])
+        quote = (hl or {}).get("quote") or ""
+    return build_prompt(
+        node.get("parent_id"),
+        node["prompt"],
+        files,
+        node.get("workspace_refs") or [],
+        quote=quote,
+    )

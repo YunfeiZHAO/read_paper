@@ -65,7 +65,9 @@ CLAUDE_BASH_TIMEOUT_SECONDS = int(os.environ.get("CLAUDE_BASH_TIMEOUT_SECONDS", 
 CLAUDE_MAX_TOOL_ITERATIONS = int(os.environ.get("CLAUDE_MAX_TOOL_ITERATIONS", "40"))
 
 # ── Shared ──────────────────────────────────────────────────────────────
-BACKENDS = {"codex", "claude"}
+# "local" is answered entirely in the browser: it drives the user's local Claude Code via a
+# localhost bridge, so no server-side worker runs for it (see routes /api/ask + bridge-events).
+BACKENDS = {"codex", "claude", "local"}
 # Default for the web_search tool (Codex's --search / Claude's web_search tool). The
 # frontend can override it per request; this default only applies when it doesn't. Off by default.
 ENABLE_WEB_SEARCH = os.environ.get("ENABLE_WEB_SEARCH", "false").strip().lower() in {"1", "true", "yes", "on"}

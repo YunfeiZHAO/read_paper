@@ -63,8 +63,12 @@ const state = {
   parentId: null,
   fileIds: new Set(),
   workspaceRefs: [],
-  selectedBackend: localStorage.getItem("askBackend") === "codex" ? "codex" : "claude",
+  selectedBackend: ["codex", "claude", "local"].includes(localStorage.getItem("askBackend"))
+    ? localStorage.getItem("askBackend")
+    : "claude",
   enableWebSearch: localStorage.getItem("askWebSearch") === "on",
+  // Local Claude Code bridge: null = unknown/not yet checked, true/false = last health result.
+  bridgeConnected: null,
   layout: new Map(),
   nodeById: new Map(),
   childrenByParent: new Map(),
@@ -157,6 +161,10 @@ const els = {
   answerCopyBtn: document.getElementById("answerCopyBtn"),
   answerDownloadBtn: document.getElementById("answerDownloadBtn"),
   answerCloseBtn: document.getElementById("answerCloseBtn"),
+  bridgeStatusBtn: document.getElementById("bridgeStatusBtn"),
+  bridgeModal: document.getElementById("bridgeModal"),
+  bridgeRetryBtn: document.getElementById("bridgeRetryBtn"),
+  bridgeCloseBtn: document.getElementById("bridgeCloseBtn"),
   // ── documents / PDF ──
   homeBtn: document.getElementById("homeBtn"),
   breadcrumb: document.getElementById("breadcrumb"),
@@ -2223,7 +2231,8 @@ function renderConversation() {
   if (node.backend) {
     const backendPill = document.createElement("span");
     backendPill.className = `meta-pill backend-${node.backend}`;
-    backendPill.textContent = node.backend === "claude" ? "Claude" : "Codex";
+    const backendLabels = { claude: "Claude", codex: "Codex", local: "Local" };
+    backendPill.textContent = backendLabels[node.backend] || node.backend;
     metaEls.push(backendPill);
   }
 
@@ -2613,6 +2622,7 @@ function renderBackendControls() {
   for (const button of els.backendBtns) {
     button.classList.toggle("active", button.dataset.backend === state.selectedBackend);
   }
+  renderBridgeStatus();
 }
 
 function renderWebSearchControls() {
@@ -2620,6 +2630,126 @@ function renderWebSearchControls() {
   for (const button of els.webSearchBtns) {
     button.classList.toggle("active", button.dataset.webSearch === current);
   }
+}
+
+// ── Local Claude Code bridge ────────────────────────────────────────────
+// The "local" backend is answered in the browser: we POST the server-built prompt to a small
+// helper on the user's machine (see bridge/server.py), which shells out to their local `claude`.
+// The API key never leaves the user's machine. Events come back shaped like the app's own event
+// stream and are written onto the node via /api/nodes/{id}/bridge-events.
+const BRIDGE_URL = "http://127.0.0.1:8765";
+
+function renderBridgeStatus() {
+  const btn = els.bridgeStatusBtn;
+  if (!btn) return;
+  const isLocal = state.selectedBackend === "local";
+  btn.hidden = !isLocal;
+  if (!isLocal) return;
+  const connected = state.bridgeConnected === true;
+  btn.textContent = connected ? "本地 Claude · 已连接" : "本地 Claude · 未连接";
+  btn.classList.toggle("connected", connected);
+  btn.classList.toggle("disconnected", !connected);
+}
+
+async function checkBridgeHealth() {
+  try {
+    const res = await fetch(`${BRIDGE_URL}/health`, { method: "GET" });
+    const data = await res.json();
+    state.bridgeConnected = !!data.ok;
+  } catch {
+    state.bridgeConnected = false;
+  }
+  renderBridgeStatus();
+  return state.bridgeConnected;
+}
+
+function openBridgeModal() {
+  if (els.bridgeModal) els.bridgeModal.hidden = false;
+}
+
+function closeBridgeModal() {
+  if (els.bridgeModal) els.bridgeModal.hidden = true;
+}
+
+// Post the accumulated events onto the node through the normal lifecycle. `status` is
+// "running" (interim) or "done"/"failed" (terminal). The server derives answer/tokens/tools.
+async function flushBridgeEvents(nodeId, events, status, error) {
+  const body = { events, status };
+  if (error) body.error = error;
+  try {
+    await fetch(`/api/nodes/${nodeId}/bridge-events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error("bridge-events flush failed", err);
+  }
+}
+
+// Drive one local-backend answer: stream from the bridge, flush events to the server, finalize.
+async function runViaBridge(nodeId, prompt) {
+  let resp;
+  try {
+    resp = await fetch(`${BRIDGE_URL}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+  } catch {
+    state.bridgeConnected = false;
+    renderBridgeStatus();
+    await flushBridgeEvents(nodeId, [], "failed", "无法连接本地 Claude 桥。请先运行 bridge/install.sh 启用。");
+    await fetchTree();
+    openBridgeModal();
+    return;
+  }
+  if (!resp.ok || !resp.body) {
+    await flushBridgeEvents(nodeId, [], "failed", `本地桥返回错误 (HTTP ${resp.status})`);
+    await fetchTree();
+    return;
+  }
+  state.bridgeConnected = true;
+  renderBridgeStatus();
+
+  const events = [];
+  let bridgeError = null;
+  let lastFlush = 0;
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (obj.bridge === "done") continue;
+        if (obj.bridge === "error") { bridgeError = obj.message || "bridge error"; continue; }
+        events.push(obj);
+        const now = Date.now();
+        if (now - lastFlush > 1000) {
+          lastFlush = now;
+          flushBridgeEvents(nodeId, events, "running"); // fire-and-forget; poll surfaces it
+        }
+      }
+    }
+  } catch (err) {
+    bridgeError = bridgeError || String(err && err.message || err);
+  }
+
+  if (bridgeError) {
+    await flushBridgeEvents(nodeId, events, "failed", bridgeError);
+  } else {
+    await flushBridgeEvents(nodeId, events, "done"); // server downgrades to failed if no answer
+  }
+  await fetchTree();
 }
 
 async function sendPrompt(event) {
@@ -2660,6 +2790,12 @@ async function sendPrompt(event) {
     state.scrollConversationToLatest = true;
     await Promise.all([fetchTree(), fetchHighlights()]);
     focusDefault();
+    if (state.selectedBackend === "local") {
+      // Browser-driven: the server returned the built prompt but ran no worker. Drive the local
+      // Claude Code bridge in the background; it writes results back onto the node. The composer
+      // frees up immediately and the 2.5s poll surfaces live progress.
+      runViaBridge(data.node.id, data.prompt).catch((err) => console.error(err));
+    }
   } catch (err) {
     window.alert(err.message);
   } finally {
@@ -3842,11 +3978,31 @@ function wireEvents() {
   }
   for (const button of els.backendBtns) {
     button.addEventListener("click", () => {
-      const backend = button.dataset.backend === "claude" ? "claude" : "codex";
+      const backend = button.dataset.backend;
+      if (!["codex", "claude", "local"].includes(backend)) return;
       if (backend === state.selectedBackend) return;
       state.selectedBackend = backend;
       localStorage.setItem("askBackend", backend);
       renderBackendControls();
+      if (backend === "local") checkBridgeHealth();
+    });
+  }
+  if (els.bridgeStatusBtn) {
+    els.bridgeStatusBtn.addEventListener("click", async () => {
+      const ok = await checkBridgeHealth();
+      if (!ok) openBridgeModal();
+    });
+  }
+  if (els.bridgeRetryBtn) {
+    els.bridgeRetryBtn.addEventListener("click", async () => {
+      const ok = await checkBridgeHealth();
+      if (ok) closeBridgeModal();
+    });
+  }
+  if (els.bridgeCloseBtn) els.bridgeCloseBtn.addEventListener("click", closeBridgeModal);
+  if (els.bridgeModal) {
+    els.bridgeModal.addEventListener("click", (e) => {
+      if (e.target && e.target.hasAttribute && e.target.hasAttribute("data-bridge-close")) closeBridgeModal();
     });
   }
   for (const button of els.webSearchBtns) {
@@ -4271,7 +4427,8 @@ async function setupApp() {
     console.error(err);
     navigate("home");
   }
-  
+
+  if (state.selectedBackend === "local") checkBridgeHealth();
   setInterval(pollIfNeeded, 2500);
 }
 

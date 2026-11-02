@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Template LaunchAgent for the local Claude Code bridge. `install.sh` generates the real plist
+  (with your actual python + repo paths) into ~/Library/LaunchAgents/. This file is reference.
+  Placeholders: __PYTHON__ (python3 path), __SERVER__ (bridge/server.py path),
+  __LOG__ (log file path), __LOCALBIN__ ($HOME/.local/bin).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.readpaper.bridge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SERVER__</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__LOCALBIN__:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__LOG__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG__</string>
+</dict>
+</plist>

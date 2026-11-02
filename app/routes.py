@@ -1,6 +1,7 @@
 """All HTTP routes, attached to a single FastAPI APIRouter and registered by create_app()."""
 from __future__ import annotations
 
+import json
 import mimetypes
 import tempfile
 from pathlib import Path
@@ -50,7 +51,15 @@ from .db import (
     update_node,
     update_workspace,
 )
+from .events import (
+    collect_tools_count,
+    collect_usage,
+    extract_answer_from_events,
+    find_first_key,
+    trim_events_for_storage,
+)
 from .export import export_subtree_markdown
+from .prompts import build_prompt_for_node
 from .runners import start_worker
 from .transfer import ImportError_, export_workspace, import_workspace
 from .uploads import secure_filename, store_upload
@@ -218,8 +227,77 @@ async def api_ask(request: Request) -> JSONResponse:
 
     if source_highlight_id:
         link_highlight_to_node(source_highlight_id, node["id"])
+    if backend == "local":
+        # Browser-driven: the user's local Claude Code answers this via the localhost bridge, so
+        # no server-side worker runs. Hand back the fully built prompt (the browser can't walk the
+        # ancestor tree itself) and let the browser POST results to /api/nodes/{id}/bridge-events.
+        return JSONResponse({"node": node, "prompt": build_prompt_for_node(node)}, status_code=201)
     start_worker(node["id"])
     return JSONResponse({"node": node}, status_code=202)
+
+
+@router.post("/api/nodes/{node_id}/bridge-events")
+async def api_bridge_events(node_id: str, request: Request) -> Dict[str, Any]:
+    """Persist events/answer produced by the browser-driven local Claude Code bridge.
+
+    The browser runs the model on the user's machine and POSTs here periodically while running
+    and once at the end. No key or LLM call touches the server; this only writes the result into
+    the normal node lifecycle (reusing the same event→answer/tokens/tools derivation the runners
+    use), so the tree, polling, export, and tool-activity UI all work unchanged.
+    """
+    _require_auth(request)
+    node = get_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node does not exist")
+    if node.get("backend") != "local":
+        raise HTTPException(status_code=400, detail="Node is not a local-backend node")
+    if node.get("status") in {"done", "failed"}:
+        raise HTTPException(status_code=409, detail="Node is already finalized")
+
+    payload = await _json_body(request)
+    events = payload.get("events")
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="events must be an array")
+    status = str(payload.get("status") or "running")
+    if status not in {"running", "done", "failed"}:
+        raise HTTPException(status_code=400, detail="status must be running, done, or failed")
+
+    fields: Dict[str, Any] = {
+        "status": status,
+        "raw_events_json": json.dumps(trim_events_for_storage(events), ensure_ascii=False),
+        "tools_count": collect_tools_count(events),
+    }
+    session_id = find_first_key(events, ("thread_id", "session_id", "sessionId", "conversation_id"))
+    if session_id:
+        fields["codex_session_id"] = session_id
+    model = payload.get("model")
+    if isinstance(model, str) and model.strip():
+        fields["model"] = model.strip()
+
+    if status in {"running"}:
+        update_node(node_id, **fields)
+        return {"node": get_node(node_id)}
+
+    # Terminal: derive the answer + token usage from the event stream, same as the runners.
+    answer = extract_answer_from_events(events)
+    usage = collect_usage(events, node.get("prompt") or "", answer)
+    fields.update(
+        answer=answer,
+        prompt_tokens=usage["prompt_tokens"],
+        completion_tokens=usage["completion_tokens"],
+        total_tokens=usage["total_tokens"],
+        completed_at=now_iso(),
+    )
+    if status == "failed":
+        fields["error"] = str(payload.get("error") or "Local Claude Code bridge reported a failure")[-8000:]
+    elif not answer:
+        fields["status"] = "failed"
+        fields["error"] = "The local bridge finished but produced no answer"
+    else:
+        fields["error"] = None
+
+    update_node(node_id, **fields)
+    return {"node": get_node(node_id)}
 
 
 @router.post("/api/upload")

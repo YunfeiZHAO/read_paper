@@ -204,7 +204,7 @@ pre {
 
 .backend-toggle {
   display: inline-grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   height: 28px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -232,6 +232,44 @@ pre {
 
 .backend-toggle button[data-backend="claude"].active {
   background: #7a4ca8;
+}
+
+.backend-toggle button[data-backend="local"].active {
+  background: #1f7a5a;
+}
+
+.bridge-status {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bridge-status.connected {
+  border-color: rgba(31, 122, 90, 0.4);
+  background: rgba(31, 122, 90, 0.1);
+  color: #1f7a5a;
+}
+
+.bridge-status.disconnected {
+  border-color: rgba(176, 108, 20, 0.4);
+  background: rgba(176, 108, 20, 0.1);
+  color: #9a5d12;
+}
+
+.bridge-modal-body p { margin: 0 0 10px; }
+.bridge-modal-body pre {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  white-space: pre-wrap;
 }
 
 .web-search-toggle {
@@ -976,6 +1014,13 @@ button.meta-pill {
   border-color: rgba(122, 76, 168, 0.4);
   background: rgba(155, 89, 182, 0.08);
   color: rgba(80, 40, 120, 0.9);
+  font-weight: 620;
+}
+
+.meta-pill.backend-local {
+  border-color: rgba(31, 122, 90, 0.4);
+  background: rgba(31, 122, 90, 0.08);
+  color: #1f7a5a;
   font-weight: 620;
 }
 

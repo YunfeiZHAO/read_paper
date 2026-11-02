@@ -237,7 +237,9 @@
                   <div class="backend-toggle" aria-label="Answer backend">
                     <button data-backend="codex" type="button">Codex</button>
                     <button class="active" data-backend="claude" type="button">Claude</button>
+                    <button data-backend="local" type="button" title="Answer with your local Claude Code via the local bridge">Local</button>
                   </div>
+                  <button id="bridgeStatusBtn" class="bridge-status" type="button" hidden title="Local Claude Code bridge status — click to re-check"></button>
                   <div class="web-search-toggle" aria-label="Web search">
                     <button data-web-search="off" type="button" title="Do not use the web_search tool">Web off</button>
                     <button data-web-search="on" type="button" title="Use the web_search tool to search the web">Web on</button>
@@ -326,6 +328,26 @@
             </div>
           </div>
           <pre id="eventsModalBody" class="events-modal-body"></pre>
+        </div>
+      </div>
+
+      <div id="bridgeModal" class="events-modal" hidden>
+        <div class="events-modal-backdrop" data-bridge-close></div>
+        <div class="events-modal-card" role="dialog" aria-modal="true" aria-label="Local Claude Code bridge">
+          <div class="events-modal-head">
+            <div class="events-modal-title">Local Claude Code bridge</div>
+            <div class="events-modal-actions">
+              <button id="bridgeRetryBtn" type="button" class="events-modal-btn primary">重试连接</button>
+              <button id="bridgeCloseBtn" type="button" class="events-modal-btn" data-bridge-close aria-label="Close">✕</button>
+            </div>
+          </div>
+          <div class="events-modal-body bridge-modal-body">
+            <p>“Local” 模式用你本机的 Claude Code 回答,密钥不离开本机。它需要一个常驻的本地小助手(bridge)。</p>
+            <p><b>未检测到本地 bridge。</b>首次使用请在仓库目录执行一次安装(登录后自启):</p>
+            <pre>bash bridge/install.sh</pre>
+            <p>验证:<code>curl -s http://127.0.0.1:8765/health</code>,然后点“重试连接”。</p>
+            <p>停止: <code>bash bridge/uninstall.sh</code>。</p>
+          </div>
         </div>
       </div>
 
