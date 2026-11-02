@@ -370,8 +370,21 @@ async def api_import_workspace(file: UploadFile = File(...)) -> JSONResponse:
         workspace = import_workspace(tmp_path)
     except ImportError_ as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except (OSError, PermissionError, IOError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"File system error during import: {str(exc)}"
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Import failed: {str(exc)}"
+        )
     finally:
-        tmp.close()
+        try:
+            tmp.close()
+        except Exception:
+            pass
         tmp_path.unlink(missing_ok=True)
     return JSONResponse({"workspace": workspace}, status_code=201)
 
