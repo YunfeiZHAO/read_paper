@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import mimetypes
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.background import BackgroundTask
 
 from .auth import AUTH_ENABLED, create_session_token, verify_credentials, verify_session_token
 from .config import (
@@ -49,8 +52,9 @@ from .db import (
 )
 from .export import export_subtree_markdown
 from .runners import start_worker
-from .uploads import store_upload
-from .utils import compact_title, rows_to_dicts
+from .transfer import ImportError_, export_workspace, import_workspace
+from .uploads import secure_filename, store_upload
+from .utils import compact_title, now_iso, rows_to_dicts
 from .workspace import (
     normalize_workspace_refs,
     public_workspace_file,
@@ -326,6 +330,50 @@ def api_delete_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Workspace does not exist")
     result = delete_workspace(workspace_id)
     return {"deleted": True, **result}
+
+
+@router.get("/api/workspaces/{workspace_id}/export")
+def api_export_workspace(workspace_id: str) -> Any:
+    """Download the whole workspace (PDFs, shared files, highlights, chat tree, notes,
+    AI scratch) as a single portable .zip. The secret API key is never included."""
+    ws = get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace does not exist")
+    try:
+        zip_path = export_workspace(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    safe_title = secure_filename(ws.get("title") or "") or "workspace"
+    filename = f"workspace-{safe_title}-{now_iso()[:10]}.zip"
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(Path(zip_path).unlink, missing_ok=True),
+    )
+
+
+@router.post("/api/workspaces/import")
+async def api_import_workspace(file: UploadFile = File(...)) -> JSONResponse:
+    """Import a workspace .zip exported by this app, recreating it with fresh IDs."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file received")
+    tmp = tempfile.NamedTemporaryFile(prefix="ws-import-", suffix=".zip", delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+        tmp.close()
+        workspace = import_workspace(tmp_path)
+    except ImportError_ as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        tmp.close()
+        tmp_path.unlink(missing_ok=True)
+    return JSONResponse({"workspace": workspace}, status_code=201)
 
 
 # ── documents / highlights ──────────────────────────────────────────────

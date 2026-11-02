@@ -164,6 +164,8 @@ const els = {
   homeScreen: document.getElementById("homeScreen"),
   homeGrid: document.getElementById("homeGrid"),
   homeNewBtn: document.getElementById("homeNewBtn"),
+  homeImportBtn: document.getElementById("homeImportBtn"),
+  homeImportInput: document.getElementById("homeImportInput"),
   workspaceScreen: document.getElementById("workspaceScreen"),
   wsTitle: document.getElementById("wsTitle"),
   wsDesc: document.getElementById("wsDesc"),
@@ -671,6 +673,15 @@ function renderHome() {
       e.stopPropagation();
       renameWorkspace(ws).catch(console.error);
     });
+    const exportBtn = document.createElement("button");
+    exportBtn.type = "button";
+    exportBtn.className = "ws-btn";
+    exportBtn.textContent = "Export";
+    exportBtn.title = "Download this workspace as a portable .zip";
+    exportBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      window.location.href = `/api/workspaces/${ws.id}/export`;
+    });
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.className = "ws-btn danger";
@@ -679,7 +690,7 @@ function renderHome() {
       e.stopPropagation();
       removeWorkspace(ws).catch(console.error);
     });
-    actions.append(renameBtn, delBtn);
+    actions.append(renameBtn, exportBtn, delBtn);
 
     card.append(body, actions);
     return card;
@@ -930,6 +941,36 @@ async function renameDocument(doc) {
     renderWorkspaceDetail();
   } catch (err) {
     window.alert(err.message);
+  }
+}
+
+// Upload a workspace .zip (exported by this app) and open the freshly imported copy.
+async function importWorkspaceFile(fileObj) {
+  if (!fileObj) return;
+  const form = new FormData();
+  form.append("file", fileObj);
+  if (els.homeImportBtn) {
+    els.homeImportBtn.disabled = true;
+    els.homeImportBtn.textContent = "Importing…";
+  }
+  try {
+    const res = await fetch("/api/workspaces/import", { method: "POST", body: form });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.error || "Import failed");
+    await fetchWorkspaces();
+    if (data.workspace && data.workspace.id) {
+      navigate("workspace", { wsId: data.workspace.id });
+    } else {
+      refreshCurrentScreen();
+    }
+  } catch (err) {
+    window.alert(err.message || "Import failed");
+  } finally {
+    if (els.homeImportBtn) {
+      els.homeImportBtn.disabled = false;
+      els.homeImportBtn.textContent = "Import";
+    }
+    if (els.homeImportInput) els.homeImportInput.value = "";
   }
 }
 
@@ -3826,6 +3867,13 @@ function wireEvents() {
       if (title == null) return;
       const created = await createWorkspace(title);
       if (created) navigate("workspace", { wsId: created.id });
+    });
+  }
+  if (els.homeImportBtn && els.homeImportInput) {
+    els.homeImportBtn.addEventListener("click", () => els.homeImportInput.click());
+    els.homeImportInput.addEventListener("change", () => {
+      const fileObj = els.homeImportInput.files && els.homeImportInput.files[0];
+      if (fileObj) importWorkspaceFile(fileObj).catch(console.error);
     });
   }
   if (els.wsRenameBtn) {
