@@ -4385,8 +4385,8 @@ async function handleLogin(event) {
     document.getElementById("loginEmail").value = "";
     document.getElementById("loginPassword").value = "";
     
-    // Refresh the app data
-    await fetchTree();
+    // Initialize the app now that the user is authenticated
+    await setupApp();
   } catch (err) {
     errorDiv.textContent = err.message || "Login failed. Please check your credentials.";
     errorDiv.style.display = "block";
@@ -4411,6 +4411,7 @@ async function handleLogout() {
 async function setupApp() {
   try {
     // With no hash, restore the last location you were at; otherwise default to home.
+    let delegatedToHashChange = false;
     if (!location.hash) {
       let last = "#/";
       try {
@@ -4418,11 +4419,13 @@ async function setupApp() {
       } catch {}
       if (last && last !== "#/") {
         location.hash = last; // triggers hashchange → applyRoute
-        return;
+        delegatedToHashChange = true;
       }
     }
-    await applyRoute();
-    if (state.view === "reader" && state.nodes.length) focusDefault();
+    if (!delegatedToHashChange) {
+      await applyRoute();
+      if (state.view === "reader" && state.nodes.length) focusDefault();
+    }
   } catch (err) {
     console.error(err);
     navigate("home");
