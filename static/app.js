@@ -53,6 +53,7 @@ const state = {
   pdfMinimapOpen: localStorage.getItem("pdfMinimapOpen") === "1",
   pdfChromeHidden: localStorage.getItem("pdfChromeHidden") === "1",
   topbarFolded: localStorage.getItem("topbarFolded") === "1",
+  darkMode: localStorage.getItem("darkMode") === "1",
   pdfRenderToken: 0,
   pdfPageViewports: new Map(),
   highlights: [],
@@ -208,6 +209,7 @@ const els = {
   pdfChromeRestore: document.getElementById("pdfChromeRestore"),
   appShell: document.querySelector(".app-shell"),
   topbarFoldBtn: document.getElementById("topbarFoldBtn"),
+  themeToggleBtn: document.getElementById("themeToggleBtn"),
   topbarRestore: document.getElementById("topbarRestore"),
   treePane: document.getElementById("treePane"),
   selectionToolbar: document.getElementById("selectionToolbar"),
@@ -3874,6 +3876,18 @@ function setTopbarFolded(folded) {
   applyTopbarFold();
 }
 
+function applyDarkMode() {
+  document.documentElement.setAttribute("data-theme", state.darkMode ? "dark" : "light");
+}
+
+function setDarkMode(dark) {
+  state.darkMode = dark;
+  try {
+    localStorage.setItem("darkMode", dark ? "1" : "0");
+  } catch {}
+  applyDarkMode();
+}
+
 async function uploadPdf(file) {
   if (!file || !state.currentWorkspaceId) return;
   const wsId = state.currentWorkspaceId;
@@ -4074,6 +4088,7 @@ function wireEvents() {
   if (els.pdfChromeRestore) els.pdfChromeRestore.addEventListener("click", () => setPdfChromeHidden(false));
   if (els.topbarFoldBtn) els.topbarFoldBtn.addEventListener("click", () => setTopbarFolded(true));
   if (els.topbarRestore) els.topbarRestore.addEventListener("click", () => setTopbarFolded(false));
+  if (els.themeToggleBtn) els.themeToggleBtn.addEventListener("click", () => setDarkMode(!state.darkMode));
   if (els.pdfViewport) {
     let minimapRaf = 0;
     els.pdfViewport.addEventListener("scroll", () => {
@@ -4286,6 +4301,7 @@ initNotesPanelWidth();
 initPdfPaneWidth();
 applyPdfChrome();
 applyTopbarFold();
+applyDarkMode();
 wireEvents();
 renderPanes();
 

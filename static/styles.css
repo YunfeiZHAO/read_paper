@@ -13,7 +13,48 @@
   --red: #b74242;
   --shadow: 0 16px 40px rgba(31, 41, 55, 0.12);
   --radius: 8px;
-  color-scheme: light;
+  --surface: #fffdfa;
+  --input-bg: #ffffff;
+  --brand-bg: #202124;
+  --brand-fg: #fffdfa;
+  --canvas-bg: #e9e8e3;
+  --topbar-bg: rgba(251, 250, 247, 0.94);
+  --user-bubble-border: #9dbab6;
+  --user-bubble-bg: #e8f3f1;
+  --user-bubble-text: #173c38;
+  --agent-bubble-border: #d6ccb8;
+  --agent-bubble-bg: #fffaf0;
+  --agent-bubble-text: #2b2821;
+  color-scheme: light dark;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1a1e;
+  --panel: #25252b;
+  --line: #3a3a44;
+  --line-strong: #55555f;
+  --text: #e8e6e1;
+  --muted: #9a9590;
+  --muted-2: #6e6a62;
+  --accent: #3da899;
+  --accent-2: #d4734c;
+  --blue: #6a9fd4;
+  --green: #4da86e;
+  --red: #d46060;
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  --surface: #1e1e24;
+  --input-bg: #2a2a32;
+  --brand-bg: #e8e6e1;
+  --brand-fg: #1a1a1e;
+  --canvas-bg: #141418;
+  --topbar-bg: rgba(26, 26, 30, 0.94);
+  --user-bubble-border: #2d5550;
+  --user-bubble-bg: #1a3330;
+  --user-bubble-text: #c4deda;
+  --agent-bubble-border: #3d3a30;
+  --agent-bubble-bg: #252318;
+  --agent-bubble-text: #dedad2;
 }
 
 * {
@@ -72,7 +113,7 @@ pre {
   gap: 14px;
   padding: 0 16px;
   border-bottom: 1px solid var(--line);
-  background: rgba(251, 250, 247, 0.94);
+  background: var(--topbar-bg);
   backdrop-filter: blur(12px);
 }
 
@@ -117,8 +158,8 @@ pre {
   width: 30px;
   height: 30px;
   place-items: center;
-  color: var(--panel);
-  background: #202124;
+  color: var(--brand-fg);
+  background: var(--brand-bg);
   border-radius: 8px;
   font-size: 19px;
   line-height: 1;
@@ -153,7 +194,7 @@ pre {
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
   color: var(--muted);
 }
 
@@ -181,7 +222,7 @@ pre {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
 }
 
 .direction-toggle button {
@@ -198,8 +239,8 @@ pre {
 }
 
 .direction-toggle button.active {
-  background: #202124;
-  color: #fffdfa;
+  background: var(--brand-bg);
+  color: var(--brand-fg);
 }
 
 .backend-toggle {
@@ -209,7 +250,7 @@ pre {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
 }
 
 .backend-toggle button {
@@ -227,7 +268,7 @@ pre {
 
 .backend-toggle button.active {
   background: #3a5a78;
-  color: #fffdfa;
+  color: var(--brand-fg);
 }
 
 .backend-toggle button[data-backend="claude"].active {
@@ -243,7 +284,7 @@ pre {
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
   color: var(--muted);
   font-size: 11px;
   font-weight: 620;
@@ -279,7 +320,7 @@ pre {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
 }
 
 .web-search-toggle button {
@@ -298,12 +339,12 @@ pre {
 
 .web-search-toggle button[data-web-search="off"].active {
   background: #6b7280;
-  color: #fffdfa;
+  color: var(--brand-fg);
 }
 
 .web-search-toggle button[data-web-search="on"].active {
   background: #2f7d5b;
-  color: #fffdfa;
+  color: var(--brand-fg);
 }
 
 .icon-button {
@@ -313,7 +354,7 @@ pre {
   place-items: center;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
   color: var(--text);
   font-size: 18px;
   line-height: 1;
@@ -322,7 +363,7 @@ pre {
 
 .icon-button:hover {
   border-color: var(--line-strong);
-  background: #f7f5ef;
+  background: var(--bg);
 }
 
 .icon-button:active {
@@ -382,7 +423,7 @@ pre {
 
 .side-resize-handle:hover,
 .resizing-side-panel .side-resize-handle {
-  background: #f0eee8;
+  background: var(--bg);
 }
 
 .side-resize-handle:hover::before,
@@ -400,7 +441,7 @@ pre {
   position: relative;
   min-height: 0;
   overflow: hidden;
-  background-color: #f4f3ef;
+  background-color: var(--canvas-bg);
   background-image:
     linear-gradient(rgba(32, 33, 36, 0.05) 1px, transparent 1px),
     linear-gradient(90deg, rgba(32, 33, 36, 0.05) 1px, transparent 1px);
@@ -441,7 +482,7 @@ pre {
   border: 1px solid rgba(32, 33, 36, 0.12);
   border-left: 5px solid var(--node-color, var(--accent));
   border-radius: var(--radius);
-  background: #fffdfa;
+  background: var(--surface);
   box-shadow: var(--shadow);
   color: var(--text);
   overflow: visible;
@@ -512,7 +553,7 @@ pre {
 .node-title {
   min-width: 0;
   overflow: hidden;
-  color: #222;
+  color: var(--text);
   font-size: 13px;
   font-weight: 650;
   line-height: 17px;
@@ -708,7 +749,7 @@ pre {
   gap: 9px;
   padding: 12px 14px 14px;
   border-top: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(251, 250, 247, 0.96), #f4f3ef);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 96%, transparent), var(--bg));
 }
 
 .composer-meta {
@@ -772,7 +813,7 @@ pre {
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fffdfa;
+  background: var(--surface);
   box-shadow: 0 8px 24px rgba(31, 41, 55, 0.06);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
@@ -845,15 +886,15 @@ pre {
   min-height: 58px;
   align-self: stretch;
   border-radius: 10px;
-  background: #202124;
-  color: #fffdfa;
+  background: var(--brand-bg);
+  color: var(--brand-fg);
   font-weight: 650;
   box-shadow: 0 7px 18px rgba(32, 33, 36, 0.14);
   transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
 #sendBtn:hover:not(:disabled) {
-  background: #111315;
+  background: color-mix(in srgb, var(--brand-bg) 88%, #000);
   box-shadow: 0 9px 22px rgba(32, 33, 36, 0.18);
 }
 
@@ -917,7 +958,7 @@ pre {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
 }
 
 .side-tabs button {
@@ -938,8 +979,8 @@ pre {
 }
 
 .side-tabs button.active {
-  background: #202124;
-  color: #fffdfa;
+  background: var(--brand-bg);
+  color: var(--brand-fg);
 }
 
 .side-tab-panel {
@@ -990,7 +1031,7 @@ pre {
   padding: 4px 7px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--muted);
   font-size: 11px;
   overflow: hidden;
@@ -1030,7 +1071,7 @@ button.meta-pill {
   overflow-y: auto;
   background:
     linear-gradient(rgba(32, 33, 36, 0.025) 1px, transparent 1px),
-    #fbfaf7;
+    var(--panel);
   background-size: 100% 28px;
 }
 
@@ -1068,15 +1109,15 @@ button.meta-pill {
 }
 
 .bubble-row.user .chat-bubble {
-  border-color: #9dbab6;
-  background: #e8f3f1;
-  color: #173c38;
+  border-color: var(--user-bubble-border);
+  background: var(--user-bubble-bg);
+  color: var(--user-bubble-text);
 }
 
 .bubble-row.agent .chat-bubble {
-  border-color: #d6ccb8;
-  background: #fffaf0;
-  color: #2b2821;
+  border-color: var(--agent-bubble-border);
+  background: var(--agent-bubble-bg);
+  color: var(--agent-bubble-text);
 }
 
 .bubble-row.agent.running .chat-bubble {
@@ -1142,7 +1183,7 @@ button.meta-pill {
 .markdown-body h5,
 .markdown-body h6 {
   margin: 10px 0 6px;
-  color: #202124;
+  color: var(--text);
   line-height: 1.3;
 }
 
@@ -1203,7 +1244,7 @@ button.meta-pill {
   overflow-x: auto;
   border: 1px solid rgba(32, 33, 36, 0.1);
   border-radius: 7px;
-  background: rgba(255, 253, 250, 0.72);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
 }
 
 .markdown-body table {
@@ -1233,7 +1274,7 @@ button.meta-pill {
 
 .markdown-body th {
   background: rgba(32, 33, 36, 0.05);
-  color: #202124;
+  color: var(--text);
   font-weight: 800;
 }
 
@@ -1316,7 +1357,7 @@ button.meta-pill {
   padding: 12px;
   min-height: 0;
   overflow: hidden;
-  background: #fbfaf7;
+  background: var(--panel);
 }
 
 .note-toolbar {
@@ -1341,7 +1382,7 @@ button.meta-pill {
   min-height: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
   overflow: hidden;
 }
 
@@ -1384,7 +1425,7 @@ button.meta-pill {
 .doc-notes {
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fbfaf7;
+  background: var(--panel);
 }
 
 .doc-notes-summary {
@@ -1446,7 +1487,7 @@ button.meta-pill {
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
 }
 
 .doc-note-title {
@@ -1534,7 +1575,7 @@ button.meta-pill {
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fffdfa;
+  background: var(--surface);
   box-shadow: var(--shadow);
 }
 
@@ -1551,7 +1592,7 @@ button.meta-pill {
 }
 
 .note-context-menu button:hover {
-  background: #f1eee6;
+  background: var(--bg);
 }
 
 .node-note-preview {
@@ -1564,7 +1605,7 @@ button.meta-pill {
   overscroll-behavior: contain;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fffdfa;
+  background: var(--surface);
   box-shadow: var(--shadow);
   color: var(--text);
   pointer-events: auto;
@@ -1585,7 +1626,7 @@ button.meta-pill {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fffdfa;
+  background: var(--surface);
   box-shadow: var(--shadow);
   color: var(--text);
 }
@@ -1921,7 +1962,7 @@ button.meta-pill {
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--input-bg);
   color: var(--text);
   cursor: grab;
   text-align: left;
@@ -1929,7 +1970,7 @@ button.meta-pill {
 
 .workspace-file-row:hover {
   border-color: var(--line-strong);
-  background: #fffdfa;
+  background: var(--surface);
 }
 
 .workspace-file-row:active {
@@ -2084,7 +2125,7 @@ button.meta-pill {
   min-height: 0;
   padding: 18px;
   overflow: auto;
-  background: #fffdfa;
+  background: var(--surface);
 }
 
 .workspace-preview-loading,
@@ -2112,8 +2153,8 @@ button.meta-pill {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fbfaf7;
-  color: #202124;
+  background: var(--panel);
+  color: var(--text);
   font-size: 12px;
   line-height: 18px;
   white-space: pre;
@@ -2224,7 +2265,7 @@ button.meta-pill {
 .pane > .pane-rail { display: none; }
 
 /* Pane sizes when expanded */
-.pdf-pane { flex: 0 0 auto; flex-basis: 560px; background: #e9e8e3; border-right: 1px solid var(--line); }
+.pdf-pane { flex: 0 0 auto; flex-basis: 560px; background: var(--canvas-bg); border-right: 1px solid var(--line); }
 .canvas-column.pane { flex: 1 1 0; min-width: 160px; }
 .side-panel.pane { flex: 0 0 var(--side-panel-width, 420px); }
 .notes-panel.pane { flex: 0 0 var(--notes-panel-width, 360px); }
@@ -2258,7 +2299,7 @@ button.meta-pill {
   cursor: pointer;
   background: var(--panel);
 }
-.pane.collapsed > .pane-rail:hover { background: #f0eee8; }
+.pane.collapsed > .pane-rail:hover { background: var(--bg); }
 .pane-rail-btn {
   writing-mode: vertical-rl;
   border: none;
@@ -2374,7 +2415,7 @@ button.meta-pill {
   position: relative;
   overflow: auto;
   padding: 16px;
-  background: #e9e8e3;
+  background: var(--canvas-bg);
   flex: 1 1 0;
   min-width: 0;
 }
@@ -2523,6 +2564,11 @@ button.meta-pill {
   cursor: default;
   user-select: none;
 }
+
+/* ── Theme toggle icon visibility ── */
+.theme-icon-dark { display: none; }
+[data-theme="dark"] .theme-icon-light { display: none; }
+[data-theme="dark"] .theme-icon-dark { display: inline; }
 
 /* ── Selection floating toolbar ── */
 .selection-toolbar {
@@ -2703,7 +2749,7 @@ button.meta-pill {
   padding: 8px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--text);
   font-size: 14px;
 }
@@ -2729,7 +2775,7 @@ button.meta-pill {
   padding: 6px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
@@ -2760,7 +2806,7 @@ button.meta-pill {
   padding: 7px 9px;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--text);
   font-size: 13px;
   font-family: inherit;
