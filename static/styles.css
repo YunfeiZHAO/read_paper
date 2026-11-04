@@ -2484,8 +2484,9 @@ button.meta-pill {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
   overflow: hidden;
 }
+[data-theme="dark"] .pdf-page { background: var(--bg); }
 .pdf-canvas { display: block; }
-[data-theme="dark"] .pdf-canvas { filter: invert(1) hue-rotate(180deg); }
+[data-theme="dark"] .pdf-canvas { filter: invert(0.88) hue-rotate(180deg); }
 
 .pdf-hl-layer {
   position: absolute;
@@ -2562,6 +2563,7 @@ button.meta-pill {
   transform-origin: 0 0;
 }
 .textLayer ::selection { background: rgba(58, 110, 165, 0.35); }
+[data-theme="dark"] .textLayer ::selection { background: rgba(100, 160, 255, 0.55); }
 .textLayer .endOfContent {
   display: block;
   position: absolute;
