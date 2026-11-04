@@ -2485,6 +2485,7 @@ button.meta-pill {
   overflow: hidden;
 }
 .pdf-canvas { display: block; }
+[data-theme="dark"] .pdf-canvas { filter: invert(1) hue-rotate(180deg); }
 
 .pdf-hl-layer {
   position: absolute;
