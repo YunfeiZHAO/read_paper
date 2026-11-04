@@ -51,6 +51,9 @@ const state = {
   pdfRenderedScale: Number(localStorage.getItem("pdfScale")) || 1.3,
   pdfHorizontal: localStorage.getItem("pdfHorizontal") === "1",
   pdfMinimapOpen: localStorage.getItem("pdfMinimapOpen") === "1",
+  pdfPanMode: false,   // true = hand tool active (toolbar button)
+  pdfPanning: null,    // {startX, startY, scrollLeft, scrollTop} while a drag is in progress
+  _spaceHeld: false,   // true while Space is held for temporary hand tool
   pdfChromeHidden: localStorage.getItem("pdfChromeHidden") === "1",
   topbarFolded: localStorage.getItem("topbarFolded") === "1",
   darkMode: localStorage.getItem("darkMode") === "1",
@@ -203,6 +206,7 @@ const els = {
   pdfZoomInBtn: document.getElementById("pdfZoomInBtn"),
   pdfZoomOutBtn: document.getElementById("pdfZoomOutBtn"),
   pdfLayoutBtn: document.getElementById("pdfLayoutBtn"),
+  pdfHandToolBtn: document.getElementById("pdfHandToolBtn"),
   pdfMinimap: document.getElementById("pdfMinimap"),
   pdfMinimapBtn: document.getElementById("pdfMinimapBtn"),
   pdfChromeToggle: document.getElementById("pdfChromeToggle"),
@@ -3375,6 +3379,48 @@ function applyPdfZoomPreview(clientX, clientY) {
   vp.scrollTop = (vp.scrollTop + my) * r - my;
 }
 
+// ── PDF pan (hand tool) ──────────────────────────────────────────────────────
+
+function setPdfPanMode(on) {
+  state.pdfPanMode = on;
+  if (els.pdfHandToolBtn) els.pdfHandToolBtn.classList.toggle("active", on);
+  applyPdfPanCursor();
+}
+
+function applyPdfPanCursor(spaceHeld = false) {
+  const vp = els.pdfViewport;
+  if (!vp) return;
+  const panActive = state.pdfPanMode || spaceHeld;
+  vp.classList.toggle("pan-mode", panActive);
+  vp.classList.toggle("panning", Boolean(state.pdfPanning));
+}
+
+function startPdfPan(event) {
+  const vp = els.pdfViewport;
+  if (!vp) return;
+  event.preventDefault();
+  state.pdfPanning = {
+    startX: event.clientX,
+    startY: event.clientY,
+    scrollLeft: vp.scrollLeft,
+    scrollTop: vp.scrollTop,
+  };
+  applyPdfPanCursor(state._spaceHeld);
+}
+
+function movePdfPan(event) {
+  if (!state.pdfPanning) return;
+  const vp = els.pdfViewport;
+  if (!vp) return;
+  vp.scrollLeft = state.pdfPanning.scrollLeft - (event.clientX - state.pdfPanning.startX);
+  vp.scrollTop = state.pdfPanning.scrollTop - (event.clientY - state.pdfPanning.startY);
+}
+
+function endPdfPan() {
+  state.pdfPanning = null;
+  applyPdfPanCursor(state._spaceHeld);
+}
+
 // Trackpad pinch (and Ctrl/⌘ + wheel) fire wheel events with ctrlKey set — zoom
 // the PDF instead of scrolling. Plain two-finger scroll is left untouched.
 function handlePdfWheelZoom(event) {
@@ -3509,6 +3555,8 @@ function pageElForNode(node) {
 }
 
 function handlePdfMouseUp() {
+  // Ignore mouseup that ended a pan drag — no text was selected intentionally.
+  if (state.pdfPanMode || state._spaceHeld) return;
   // Defer until the selection has settled before reading it.
   setTimeout(() => {
     const sel = window.getSelection();
@@ -4084,6 +4132,34 @@ function wireEvents() {
   if (els.pdfViewport) els.pdfViewport.addEventListener("wheel", handlePdfWheelZoom, { passive: false });
   if (els.pdfLayoutBtn) els.pdfLayoutBtn.addEventListener("click", togglePdfLayout);
   if (els.pdfMinimapBtn) els.pdfMinimapBtn.addEventListener("click", toggleMinimap);
+  if (els.pdfHandToolBtn) els.pdfHandToolBtn.addEventListener("click", () => setPdfPanMode(!state.pdfPanMode));
+
+  // Pan via mousedown on the viewport (hand tool mode or space held).
+  if (els.pdfViewport) {
+    els.pdfViewport.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      if (state.pdfPanMode || state._spaceHeld) startPdfPan(event);
+    });
+  }
+  document.addEventListener("mousemove", (event) => { if (state.pdfPanning) movePdfPan(event); });
+  document.addEventListener("mouseup", () => { if (state.pdfPanning) endPdfPan(); });
+
+  // Space bar: hold to temporarily activate hand tool.
+  document.addEventListener("keydown", (event) => {
+    if (event.code !== "Space" || state._spaceHeld) return;
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
+    if (!els.pdfViewport) return;
+    event.preventDefault();
+    state._spaceHeld = true;
+    applyPdfPanCursor(true);
+  });
+  document.addEventListener("keyup", (event) => {
+    if (event.code !== "Space" || !state._spaceHeld) return;
+    state._spaceHeld = false;
+    if (state.pdfPanning) endPdfPan();
+    applyPdfPanCursor(false);
+  });
   if (els.pdfChromeToggle) els.pdfChromeToggle.addEventListener("click", () => setPdfChromeHidden(true));
   if (els.pdfChromeRestore) els.pdfChromeRestore.addEventListener("click", () => setPdfChromeHidden(false));
   if (els.topbarFoldBtn) els.topbarFoldBtn.addEventListener("click", () => setTopbarFolded(true));

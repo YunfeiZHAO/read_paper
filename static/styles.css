@@ -2419,6 +2419,11 @@ button.meta-pill {
   flex: 1 1 0;
   min-width: 0;
 }
+.pdf-viewport.pan-mode { cursor: grab; user-select: none; }
+.pdf-viewport.pan-mode.panning,
+.pdf-viewport.panning { cursor: grabbing; user-select: none; }
+.pdf-viewport.pan-mode .pdf-pages,
+.pdf-viewport.panning .pdf-pages { pointer-events: none; }
 
 /* ── Page minimap ── */
 .pdf-minimap {
