@@ -3750,3 +3750,70 @@ button.gantt-label:hover { color: var(--accent); }
 }
 .pomo-settings .pomo-check { justify-content: flex-start; gap: 7px; }
 .pomo-settings .pomo-check input { margin: 0; }
+
+/* ── Pomodoro quick-start popover (anchored under the ⏱ toolbar button) ───── */
+.pomo-launcher {
+  position: fixed;
+  z-index: 70;
+  width: 236px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  --pomo: var(--accent);
+}
+.pomo-launcher[hidden] { display: none; }
+.pomo-pop-title { font-weight: 600; margin-bottom: 10px; }
+.pomo-pop-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.pomo-chips { display: flex; gap: 6px; margin-bottom: 10px; }
+.pomo-chip {
+  flex: 1;
+  padding: 7px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.pomo-chip:hover { border-color: var(--line-strong); }
+.pomo-chip.on {
+  border-color: var(--pomo);
+  background: color-mix(in srgb, var(--pomo) 14%, transparent);
+  color: var(--pomo);
+  font-weight: 600;
+}
+.pomo-pop-row { display: flex; gap: 10px; margin-bottom: 12px; }
+.pomo-pop-row label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pomo-pop-row input {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+.pomo-pop-start { width: 100%; }
+.pomo-pop-status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.pomo-pop-phase { font-weight: 600; color: var(--accent); }
+.pomo-pop-phase[data-phase="short"] { color: var(--green); }
+.pomo-pop-phase[data-phase="long"] { color: var(--accent-2); }
+.pomo-pop-time { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pomo-pop-actions { display: flex; gap: 6px; }

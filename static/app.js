@@ -217,6 +217,7 @@ const els = {
   pdfHandToolBtn: document.getElementById("pdfHandToolBtn"),
   pdfMinimap: document.getElementById("pdfMinimap"),
   pdfMinimapBtn: document.getElementById("pdfMinimapBtn"),
+  pdfTimerBtn: document.getElementById("pdfTimerBtn"),
   pdfChromeToggle: document.getElementById("pdfChromeToggle"),
   pdfChromeRestore: document.getElementById("pdfChromeRestore"),
   appShell: document.querySelector(".app-shell"),
@@ -5055,6 +5056,7 @@ function wireEvents() {
   if (els.pdfViewport) els.pdfViewport.addEventListener("wheel", handlePdfWheelZoom, { passive: false });
   if (els.pdfLayoutBtn) els.pdfLayoutBtn.addEventListener("click", togglePdfLayout);
   if (els.pdfMinimapBtn) els.pdfMinimapBtn.addEventListener("click", toggleMinimap);
+  if (els.pdfTimerBtn) els.pdfTimerBtn.addEventListener("click", pomoToggleLauncher);
   if (els.pdfHandToolBtn) els.pdfHandToolBtn.addEventListener("click", () => setPdfPanMode(!state.pdfPanMode));
 
   // Pan via mousedown on the viewport (hand tool mode or space held).
@@ -5644,6 +5646,11 @@ const pomo = {
   config: loadPomoConfig(),
   phase: "work", // "work" | "short" | "long"
   running: false,
+  // "Engaged": the user has explicitly started a focus session and not yet stopped/reset it.
+  // While engaged, the automatic passive tracker stays fully off (focus, breaks, and pauses)
+  // so the two never run at once — a focus phase logs as "pomodoro", everything else logs
+  // nothing. Disengaging (reset/stop) hands timekeeping back to passive reading.
+  active: false,
   remaining: 0, // seconds left in the current phase
   endsAt: 0, // epoch ms the phase ends at (while running)
   completed: 0, // work pomodoros finished in this cycle
@@ -5651,6 +5658,11 @@ const pomo = {
   settingsOpen: false,
   timer: null,
   el: null,
+  // Quick-start popover (anchored under the reader's ⏱ toolbar button).
+  launcher: null,
+  launcherOpen: false,
+  launchFocus: 0, // pending focus minutes selected in the popover
+  launchBreak: 0, // pending short-break minutes selected in the popover
 };
 
 function pomoPhaseSeconds(phase) {
@@ -5667,42 +5679,52 @@ function pomoFmt(secs) {
 // Keep the time tracker in step with the current Pomodoro state.
 function pomoSyncTracker() {
   if (state.view !== "reader" || !state.currentDocId) return;
-  if (pomo.running && pomo.phase === "work") {
-    ttSwitchKind("pomodoro").catch(console.error);
-  } else if (pomo.running) {
-    ttStop().catch(console.error); // a break is running — don't count it
+  if (pomo.active) {
+    // A manual focus session is engaged → auto passive tracking stays off until it ends.
+    if (pomo.running && pomo.phase === "work") {
+      ttSwitchKind("pomodoro").catch(console.error);
+    } else {
+      ttStop().catch(console.error); // break or paused — log nothing, don't resume passive
+    }
   } else {
-    timeTrackStart(state.currentDocId).catch(console.error); // idle → passive reading
+    timeTrackStart(state.currentDocId).catch(console.error); // no session → passive reading
   }
 }
 
 function pomoStart() {
   if (pomo.running) return;
   if (pomo.remaining <= 0) pomo.remaining = pomoPhaseSeconds(pomo.phase);
+  pomo.active = true; // starting engages the session (suspends auto-tracking)
   pomo.running = true;
   pomo.endsAt = Date.now() + pomo.remaining * 1000;
   pomoRunTimer();
   pomoSyncTracker();
   renderPomodoro();
+  renderLauncher();
 }
 
 function pomoPause() {
   if (!pomo.running) return;
   pomo.remaining = Math.max(0, Math.round((pomo.endsAt - Date.now()) / 1000));
   pomo.running = false;
+  // Stays engaged while paused — auto-tracking remains off until an explicit stop/reset.
   pomoStopTimer();
   pomoSyncTracker();
   renderPomodoro();
+  renderLauncher();
 }
 
+// Stop and disengage the session. Hands timekeeping back to passive reading.
 function pomoReset() {
   pomo.running = false;
+  pomo.active = false;
   pomo.phase = "work";
   pomo.completed = 0;
   pomo.remaining = pomoPhaseSeconds("work");
   pomoStopTimer();
   pomoSyncTracker();
   renderPomodoro();
+  renderLauncher();
 }
 
 // Advance to the next phase without finishing the current one (user "skip").
@@ -5728,6 +5750,7 @@ function pomoAdvance(completedNaturally) {
   } else {
     pomoSyncTracker();
     renderPomodoro();
+    renderLauncher();
   }
 }
 
@@ -5739,6 +5762,7 @@ function pomoRunTimer() {
       pomoPhaseComplete();
     } else {
       renderPomodoro();
+      if (pomo.launcherOpen) renderLauncher(); // keep the popover's live time in sync
     }
   }, 1000);
 }
@@ -5804,6 +5828,101 @@ function pomoMaybeAskNotify() {
   } catch {}
 }
 
+// ── Quick-start popover (⏱ toolbar button) ─────────────────────────────────
+
+const POMO_FOCUS_PRESETS = [15, 25, 45, 50];
+const pomoClampMin = (v) => Math.max(1, Math.min(180, Math.round(Number(v) || 0)));
+
+// Begin a fresh manual focus session with the chosen focus/break lengths. These override the
+// stored defaults (and persist), then the classic cycle runs with them.
+function pomoStartManual(focusMin, breakMin) {
+  pomo.config.work = pomoClampMin(focusMin) || POMO_DEFAULTS.work;
+  if (breakMin) pomo.config.short = pomoClampMin(breakMin) || POMO_DEFAULTS.short;
+  savePomoConfig();
+  pomoStopTimer();
+  pomo.phase = "work";
+  pomo.completed = 0;
+  pomo.running = false;
+  pomo.remaining = pomoPhaseSeconds("work");
+  pomo.open = true; // reveal the floating widget so the live countdown has a home
+  try {
+    localStorage.setItem("pomodoroOpen", "1");
+  } catch {}
+  pomoMaybeAskNotify();
+  pomoStart(); // engages + runs
+  pomoCloseLauncher();
+}
+
+function pomoToggleLauncher() {
+  pomo.launcherOpen = !pomo.launcherOpen;
+  if (pomo.launcherOpen) {
+    pomo.launchFocus = pomo.config.work;
+    pomo.launchBreak = pomo.config.short;
+    pomoMaybeAskNotify();
+  }
+  renderLauncher();
+}
+
+function pomoCloseLauncher() {
+  if (!pomo.launcherOpen) return;
+  pomo.launcherOpen = false;
+  renderLauncher();
+}
+
+function renderLauncher() {
+  const el = pomo.launcher;
+  if (!el) return;
+  if (!pomo.launcherOpen || state.view !== "reader") {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+
+  // Anchor the popover just under the ⏱ button, right-aligned to it, kept within the viewport.
+  const btn = els.pdfTimerBtn;
+  if (btn) {
+    const r = btn.getBoundingClientRect();
+    const width = 236;
+    let left = Math.min(r.right - width, window.innerWidth - width - 8);
+    left = Math.max(8, left);
+    el.style.left = `${left}px`;
+    el.style.top = `${r.bottom + 8}px`;
+  }
+
+  if (pomo.active) {
+    // A session is engaged — the popover doubles as a quick control.
+    const liveRemaining = pomo.running
+      ? Math.max(0, Math.round((pomo.endsAt - Date.now()) / 1000))
+      : pomo.remaining;
+    el.innerHTML = `
+      <div class="pomo-pop-status">
+        <span class="pomo-pop-phase" data-phase="${pomo.phase}">${POMO_LABELS[pomo.phase]}</span>
+        <span class="pomo-pop-time">${pomoFmt(liveRemaining)}</span>
+      </div>
+      <div class="pomo-pop-actions">
+        ${pomo.running
+          ? `<button type="button" class="pomo-btn primary" data-launch="pause">Pause</button>`
+          : `<button type="button" class="pomo-btn primary" data-launch="resume">Resume</button>`}
+        <button type="button" class="pomo-btn" data-launch="stop">Stop</button>
+      </div>`;
+    return;
+  }
+
+  const focus = pomo.launchFocus || pomo.config.work;
+  const chips = POMO_FOCUS_PRESETS.map(
+    (m) => `<button type="button" class="pomo-chip${m === focus ? " on" : ""}" data-focus="${m}">${m}</button>`
+  ).join("");
+  el.innerHTML = `
+    <div class="pomo-pop-title">Start a focus session</div>
+    <div class="pomo-pop-label">Focus (min)</div>
+    <div class="pomo-chips">${chips}</div>
+    <div class="pomo-pop-row">
+      <label>Custom <input type="number" min="1" max="180" data-launch-focus value="${focus}"></label>
+      <label>Break <input type="number" min="1" max="180" data-launch-break value="${pomo.launchBreak || pomo.config.short}"></label>
+    </div>
+    <button type="button" class="pomo-btn primary pomo-pop-start" data-launch="start">Start focus</button>`;
+}
+
 function pomoInit() {
   if (pomo.el) return;
   pomo.remaining = pomoPhaseSeconds("work");
@@ -5855,6 +5974,48 @@ function pomoInit() {
       renderPomodoro();
     }
   });
+
+  // Quick-start popover, anchored under the reader's ⏱ toolbar button.
+  const launcher = document.createElement("div");
+  launcher.className = "pomo-launcher";
+  launcher.hidden = true;
+  document.body.appendChild(launcher);
+  pomo.launcher = launcher;
+  launcher.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-focus]");
+    if (chip) {
+      pomo.launchFocus = Number(chip.dataset.focus);
+      renderLauncher();
+      return;
+    }
+    const action = e.target.closest("[data-launch]")?.dataset.launch;
+    if (!action) return;
+    if (action === "start") {
+      const f = launcher.querySelector("[data-launch-focus]");
+      const b = launcher.querySelector("[data-launch-break]");
+      pomoStartManual(f ? f.value : pomo.config.work, b ? b.value : pomo.config.short);
+    } else if (action === "pause") {
+      pomoPause();
+    } else if (action === "resume") {
+      pomoStart();
+    } else if (action === "stop") {
+      pomoReset();
+    }
+  });
+  launcher.addEventListener("input", (e) => {
+    if (e.target.matches("[data-launch-focus]")) pomo.launchFocus = pomoClampMin(e.target.value);
+    else if (e.target.matches("[data-launch-break]")) pomo.launchBreak = pomoClampMin(e.target.value);
+  });
+  // Dismiss on outside click or Esc.
+  document.addEventListener("pointerdown", (e) => {
+    if (!pomo.launcherOpen) return;
+    if (launcher.contains(e.target) || (els.pdfTimerBtn && els.pdfTimerBtn.contains(e.target))) return;
+    pomoCloseLauncher();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && pomo.launcherOpen) pomoCloseLauncher();
+  });
+
   renderPomodoro();
 }
 
@@ -5863,7 +6024,12 @@ function renderPomodoro() {
   if (!el) return;
   const show = state.view === "reader";
   el.hidden = !show;
-  if (!show) return;
+  // The ⏱ toolbar button lights up while a focus session is engaged.
+  if (els.pdfTimerBtn) els.pdfTimerBtn.classList.toggle("active", !!pomo.active);
+  if (!show) {
+    renderLauncher(); // hides itself outside the reader
+    return;
+  }
 
   el.classList.toggle("open", pomo.open);
   el.classList.toggle("running", pomo.running);

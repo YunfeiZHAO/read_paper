@@ -22,9 +22,52 @@ Backends are pluggable: the **Claude API** (default) or the **Codex CLI**.
 - **Workspaces** — a top-level project groups a set of PDFs and their shared files. Navigation
   is home (workspace cards) → workspace (PDF list) → reader.
 - **Notes** — a freeform Markdown note per node, plus workspace- and document-level notes.
+- **Time tracking & Pomodoro** — automatic reading-time tracking per paper (rolled up per
+  workspace) plus a built-in Pomodoro focus timer. See [Time tracking & Pomodoro](#time-tracking--pomodoro).
 - **Live tool activity** — tool calls, command output, and web searches stream into the
   conversation pane as the backend runs.
 - **Export** — pull any node (with its ancestor context) back out as text.
+
+## Time tracking & Pomodoro
+
+The app tracks how long you spend on each paper and totals it per workspace, and ships a
+Pomodoro focus timer in the reader.
+
+**Where you see it.** Each PDF card shows a ⏱ time-on-paper badge, and each workspace card on
+the home dashboard shows the aggregated time across its papers. Badges are hidden at zero and
+read as `45m` or `1h 20m`.
+
+**How time is counted.** Two sources feed the same per-paper total, and a given minute is never
+counted twice:
+
+- **Passive reading** — accrues automatically while a paper's reader is open, but only while
+  the tab is **visible**, the window is **focused**, and you've interacted (scroll / mouse /
+  keys) recently. Switching tabs, leaving the window, or going idle pauses it; the idle grace
+  window is trimmed back out, so time spent away from the screen doesn't count.
+- **Pomodoro focus** — time inside a Pomodoro *focus* interval is logged against the current
+  paper. Break time is **not** counted.
+
+Only one clock runs at a time. Starting a focus session (manually or from the widget)
+**engages** it: passive tracking switches fully off for the whole session — focus, breaks, and
+pauses alike — so you never double-count, and nothing accrues during breaks. Stopping the
+session hands timekeeping back to passive reading.
+
+**Starting a focus session.** The reader's PDF toolbar has a ⏱ button that opens a quick-start
+popover: pick a concentration length from the presets (15 / 25 / 45 / 50 min) or type a custom
+one, optionally set the break length, and hit **Start focus**. The button lights up while a
+session is running, and reopening the popover gives you quick **Pause / Resume / Stop**.
+
+**The Pomodoro widget.** Starting a session opens a floating widget in the reader (bottom-right,
+collapsible to a pill) that runs the classic cycle: focus → short break → long break every few
+pomodoros. Durations, the long-break interval, auto-start of the next phase, and the
+end-of-phase sound are all configurable from its settings gear and persist in `localStorage`.
+The countdown is driven by a wall-clock end time, so it stays accurate even in a throttled
+background tab, and each phase ends with a chime and a desktop notification (when you've granted
+notification permission).
+
+**Storage & portability.** Sessions live in a `study_sessions` table in the same SQLite database
+and travel with a workspace when you export/import it. Deleting a paper or workspace removes its
+sessions. Pomodoro settings are per-browser (`localStorage`), not stored server-side.
 
 ## Run
 
