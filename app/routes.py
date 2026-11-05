@@ -95,7 +95,6 @@ router = APIRouter()
 
 INDEX_HTML = BASE_DIR / "templates" / "index.html"
 
-
 def _require_auth(request: Request) -> None:
     """Check if authentication is enabled and verify the session token."""
     if not AUTH_ENABLED:
@@ -286,7 +285,15 @@ async def api_ask(request: Request) -> JSONResponse:
         # Browser-driven: the user's local Claude Code answers this via the localhost bridge, so
         # no server-side worker runs. Hand back the fully built prompt (the browser can't walk the
         # ancestor tree itself) and let the browser POST results to /api/nodes/{id}/bridge-events.
-        return JSONResponse({"node": node, "prompt": build_prompt_for_node(node)}, status_code=201)
+        # The browser will also fetch the PDF and send it to the bridge as a base64 file, so we
+        # just tell the prompt what filename to expect in the working directory.
+        pdf_filename = ""
+        if node.get("document_id"):
+            doc = get_document(node["document_id"])
+            if doc:
+                pdf_filename = doc.get("original_name") or ""
+        built_prompt = build_prompt_for_node(node, pdf_filename=pdf_filename)
+        return JSONResponse({"node": node, "prompt": built_prompt}, status_code=201)
     start_worker(node["id"])
     return JSONResponse({"node": node}, status_code=202)
 

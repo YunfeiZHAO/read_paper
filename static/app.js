@@ -3548,10 +3548,33 @@ async function flushBridgeEvents(nodeId, events, status, error) {
 
 // Drive one local-backend answer: stream from the bridge, flush events to the server, finalize.
 async function runViaBridge(nodeId, prompt, model) {
+  // Fetch the source PDF from the app server (using the session cookie) and include it in the
+  // bridge request as base64 so the local claude process finds the file in its working directory.
+  const files = [];
+  if (state.currentDocId) {
+    try {
+      const doc = state.documents.find((d) => d.id === state.currentDocId);
+      const r = await fetch(`/api/documents/${state.currentDocId}/file`);
+      if (r.ok) {
+        const blob = await r.blob();
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        files.push({ name: doc?.original_name || "paper.pdf", data: base64 });
+      }
+    } catch {
+      // Non-fatal: proceed without the file; the prompt still has any selected quote.
+    }
+  }
+
   let resp;
   try {
     const body = { prompt };
     if (model) body.model = model;
+    if (files.length) body.files = files;
     resp = await fetch(`${BRIDGE_URL}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

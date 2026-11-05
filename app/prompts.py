@@ -70,6 +70,7 @@ def build_prompt(
     files: List[Dict[str, Any]],
     workspace_refs: List[Dict[str, Any]],
     quote: str = "",
+    pdf_filename: str = "",
 ) -> str:
     inherited = path_to_node(parent_id)
     inherited_files = inherited_attachment_files(inherited)
@@ -111,6 +112,15 @@ def build_prompt(
             make_workspace_ref_context(workspace_refs),
         ]
     )
+    if pdf_filename.strip():
+        lines.extend(
+            [
+                "",
+                "## Source PDF",
+                f"The paper has been placed in your working directory as: {pdf_filename}",
+                "Read it to answer questions about its content.",
+            ]
+        )
     if quote.strip():
         lines.extend(
             [
@@ -131,7 +141,7 @@ def build_prompt(
     return "\n".join(lines)
 
 
-def build_prompt_for_node(node: Dict[str, Any]) -> str:
+def build_prompt_for_node(node: Dict[str, Any], pdf_filename: str = "") -> str:
     """Build the full self-contained prompt for an existing node dict.
 
     Factors out what the Claude/Codex runners do before calling build_prompt(): resolve the
@@ -149,4 +159,5 @@ def build_prompt_for_node(node: Dict[str, Any]) -> str:
         files,
         node.get("workspace_refs") or [],
         quote=quote,
+        pdf_filename=pdf_filename,
     )

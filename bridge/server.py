@@ -18,6 +18,7 @@ Wire protocol of POST /run (NDJSON, one JSON object per line):
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -248,6 +249,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         model = (payload or {}).get("model")
         cwd = str((payload or {}).get("cwd") or WORK_DIR)
+        # Write any files the browser fetched (e.g. the source PDF) into the work dir so
+        # the local claude process can read them without making further network requests.
+        for f in (payload or {}).get("files") or []:
+            name = str(f.get("name") or "file").replace("/", "_").replace("..", "_")
+            data_b64 = f.get("data") or ""
+            try:
+                Path(cwd).mkdir(parents=True, exist_ok=True)
+                (Path(cwd) / name).write_bytes(base64.b64decode(data_b64))
+            except Exception as exc:
+                sys.stderr.write("[bridge] could not write file %s: %s\n" % (name, exc))
         self._run_claude(prompt, model if isinstance(model, str) and model.strip() else None, cwd)
 
     # ── /run streaming ──────────────────────────────────────────────────
