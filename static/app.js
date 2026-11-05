@@ -38,6 +38,7 @@ const state = {
   // ── Workspaces (a user project: a group of PDFs + shared files) ──
   view: "home", // "home" | "workspace" | "reader"
   workspaces: [],
+  workspaceCategories: [], // home-dashboard sections
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId") || null,
   wsDetail: { documents: [], categories: [], files: [] }, // workspace-detail page data
   allFiles: [], // all files from /api/tree (state.files is the subset for the current workspace)
@@ -175,6 +176,7 @@ const els = {
   appContent: document.getElementById("appContent"),
   homeScreen: document.getElementById("homeScreen"),
   homeGrid: document.getElementById("homeGrid"),
+  homeAddCategoryBtn: document.getElementById("homeAddCategoryBtn"),
   homeNewBtn: document.getElementById("homeNewBtn"),
   homeImportBtn: document.getElementById("homeImportBtn"),
   homeImportInput: document.getElementById("homeImportInput"),
@@ -490,9 +492,11 @@ async function fetchWorkspaces() {
     const res = await fetch("/api/workspaces");
     const data = await res.json();
     state.workspaces = data.workspaces || [];
+    state.workspaceCategories = data.categories || [];
   } catch (err) {
     console.error(err);
     state.workspaces = [];
+    state.workspaceCategories = [];
   }
   // Validate the current workspace: fall back to the first one, or create a default if none exist.
   if (state.currentWorkspaceId && !state.workspaces.some((w) => w.id === state.currentWorkspaceId)) {
@@ -523,6 +527,7 @@ async function createWorkspace(title, { silent = false } = {}) {
     // Refresh the local list so counts/order stay consistent.
     const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => ({}));
     state.workspaces = list.workspaces || state.workspaces;
+    if (list.categories) state.workspaceCategories = list.categories;
     return data.workspace;
   } catch (err) {
     if (!silent) window.alert(err.message);
@@ -645,6 +650,112 @@ function renderBreadcrumb() {
 
 // ── Home: wall of workspace cards ────────────────────────────────────────
 
+// Build one workspace card (draggable). Reused for every home section.
+function buildWorkspaceCard(ws) {
+  const card = document.createElement("div");
+  card.className = "ws-card";
+  card.draggable = true;
+  card.dataset.wsId = ws.id;
+
+  card.addEventListener("dragstart", (e) => {
+    state.dragWsId = ws.id;
+    card.classList.add("dragging");
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      try {
+        e.dataTransfer.setData("text/plain", ws.id);
+      } catch (_) {}
+    }
+  });
+  card.addEventListener("dragend", () => {
+    state.dragWsId = null;
+    card.classList.remove("dragging");
+    clearHomeDropMarkers();
+  });
+
+  const body = document.createElement("button");
+  body.type = "button";
+  body.className = "ws-card-body";
+  body.addEventListener("click", () => navigate("workspace", { wsId: ws.id }));
+
+  const title = document.createElement("div");
+  title.className = "ws-card-title";
+  title.textContent = ws.title || "Untitled";
+  const meta = document.createElement("div");
+  meta.className = "ws-card-meta";
+  const when = (ws.last_opened_at || "").slice(0, 10);
+  meta.textContent = `${ws.document_count || 0} PDF` + (when ? `  ·  ${when}` : "");
+  body.append(title, meta);
+
+  // Per-document-category paper-count breakdown (e.g. "Machine Learning 3 · Finance 2").
+  const counts = Array.isArray(ws.category_counts) ? ws.category_counts : [];
+  if (counts.length) {
+    const cats = document.createElement("div");
+    cats.className = "ws-card-cats";
+    counts.forEach((c) => {
+      const chip = document.createElement("span");
+      chip.className = "ws-card-cat";
+      const name = document.createElement("span");
+      name.className = "ws-card-cat-name";
+      name.textContent = c.title;
+      const n = document.createElement("span");
+      n.className = "ws-card-cat-n";
+      n.textContent = String(c.count);
+      chip.append(name, n);
+      cats.append(chip);
+    });
+    body.append(cats);
+  }
+
+  if (ws.description) {
+    const desc = document.createElement("div");
+    desc.className = "ws-card-desc";
+    desc.textContent = ws.description;
+    body.append(desc);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "ws-card-actions";
+  const renameBtn = document.createElement("button");
+  renameBtn.type = "button";
+  renameBtn.className = "ws-btn";
+  renameBtn.textContent = "Rename";
+  renameBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    renameWorkspace(ws).catch(console.error);
+  });
+  const exportBtn = document.createElement("button");
+  exportBtn.type = "button";
+  exportBtn.className = "ws-btn";
+  exportBtn.textContent = "Export";
+  exportBtn.title = "Download this workspace as a portable .zip";
+  exportBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    window.location.href = `/api/workspaces/${ws.id}/export`;
+  });
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "ws-btn danger";
+  delBtn.textContent = "Delete";
+  delBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    removeWorkspace(ws).catch(console.error);
+  });
+  actions.append(renameBtn, exportBtn, delBtn);
+
+  card.append(body, actions);
+  return card;
+}
+
+function clearHomeDropMarkers() {
+  if (!els.homeGrid) return;
+  els.homeGrid
+    .querySelectorAll(".home-section.drag-over")
+    .forEach((el) => el.classList.remove("drag-over"));
+}
+
+const WS_UNCATEGORIZED = "__ws_uncat__"; // sentinel section id for workspaces with no category
+
 function renderHome() {
   if (!els.homeGrid) return;
   if (!state.workspaces.length) {
@@ -654,63 +765,207 @@ function renderHome() {
     els.homeGrid.replaceChildren(empty);
     return;
   }
-  const cards = state.workspaces.map((ws) => {
-    const card = document.createElement("div");
-    card.className = "ws-card";
 
-    const body = document.createElement("button");
-    body.type = "button";
-    body.className = "ws-card-body";
-    body.addEventListener("click", () => navigate("workspace", { wsId: ws.id }));
+  const cats = (state.workspaceCategories || [])
+    .slice()
+    .sort((a, b) => (a.position || 0) - (b.position || 0));
 
-    const title = document.createElement("div");
-    title.className = "ws-card-title";
-    title.textContent = ws.title || "Untitled";
-    const meta = document.createElement("div");
-    meta.className = "ws-card-meta";
-    const when = (ws.last_opened_at || "").slice(0, 10);
-    meta.textContent = `${ws.document_count || 0} PDF` + (when ? `  ·  ${when}` : "");
-    body.append(title, meta);
-    if (ws.description) {
-      const desc = document.createElement("div");
-      desc.className = "ws-card-desc";
-      desc.textContent = ws.description;
-      body.append(desc);
-    }
-
-    const actions = document.createElement("div");
-    actions.className = "ws-card-actions";
-    const renameBtn = document.createElement("button");
-    renameBtn.type = "button";
-    renameBtn.className = "ws-btn";
-    renameBtn.textContent = "Rename";
-    renameBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      renameWorkspace(ws).catch(console.error);
-    });
-    const exportBtn = document.createElement("button");
-    exportBtn.type = "button";
-    exportBtn.className = "ws-btn";
-    exportBtn.textContent = "Export";
-    exportBtn.title = "Download this workspace as a portable .zip";
-    exportBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      window.location.href = `/api/workspaces/${ws.id}/export`;
-    });
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "ws-btn danger";
-    delBtn.textContent = "Delete";
-    delBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      removeWorkspace(ws).catch(console.error);
-    });
-    actions.append(renameBtn, exportBtn, delBtn);
-
-    card.append(body, actions);
-    return card;
+  // Group workspaces by category id (null → Uncategorized sentinel).
+  const byCat = new Map();
+  byCat.set(WS_UNCATEGORIZED, []);
+  cats.forEach((c) => byCat.set(c.id, []));
+  state.workspaces.forEach((ws) => {
+    const key = ws.category_id && byCat.has(ws.category_id) ? ws.category_id : WS_UNCATEGORIZED;
+    byCat.get(key).push(ws);
   });
-  els.homeGrid.replaceChildren(...cards);
+
+  const sections = [];
+  cats.forEach((c) => sections.push(buildHomeSection(c.id, c.title, byCat.get(c.id) || [], c)));
+  // Uncategorized section is always present and sits last.
+  sections.push(
+    buildHomeSection(WS_UNCATEGORIZED, "Uncategorized", byCat.get(WS_UNCATEGORIZED) || [], null)
+  );
+
+  els.homeGrid.replaceChildren(...sections);
+}
+
+function buildHomeSection(sectionId, title, workspaces, category) {
+  const section = document.createElement("div");
+  section.className = "home-section";
+  section.dataset.sectionId = sectionId;
+
+  const head = document.createElement("div");
+  head.className = "home-section-head";
+  const label = document.createElement("div");
+  label.className = "home-section-title";
+  label.textContent = title;
+  const count = document.createElement("span");
+  count.className = "home-section-count";
+  count.textContent = String(workspaces.length);
+  head.append(label, count);
+
+  if (category) {
+    const actions = document.createElement("div");
+    actions.className = "home-section-actions";
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.className = "ws-col-btn";
+    rename.title = "Rename category";
+    rename.textContent = "✎";
+    rename.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameWorkspaceCategory(category).catch(console.error);
+    });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ws-col-btn danger";
+    del.title = "Delete category";
+    del.textContent = "⌫";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteWorkspaceCategory(category).catch(console.error);
+    });
+    actions.append(rename, del);
+    head.append(actions);
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "home-grid";
+  if (workspaces.length) {
+    workspaces.forEach((ws) => grid.append(buildWorkspaceCard(ws)));
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "ws-col-empty";
+    empty.textContent = "Drop workspaces here";
+    grid.append(empty);
+  }
+
+  // Drop target: the whole section.
+  section.addEventListener("dragover", (e) => {
+    if (!state.dragWsId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    section.classList.add("drag-over");
+  });
+  section.addEventListener("dragleave", (e) => {
+    if (!section.contains(e.relatedTarget)) section.classList.remove("drag-over");
+  });
+  section.addEventListener("drop", (e) => {
+    e.preventDefault();
+    section.classList.remove("drag-over");
+    const wsId = state.dragWsId;
+    state.dragWsId = null;
+    if (!wsId) return;
+    const newCategoryId = sectionId === WS_UNCATEGORIZED ? null : sectionId;
+    const position = computeHomeDropPosition(grid, wsId, e.clientX, e.clientY);
+    moveWorkspace(wsId, newCategoryId, position).catch(console.error);
+  });
+
+  section.append(head, grid);
+  return section;
+}
+
+// Position for a dropped workspace card within a (wrapping) grid: pick the insertion point
+// as the first sibling whose center is below-or-right of the cursor.
+function computeHomeDropPosition(grid, draggedId, clientX, clientY) {
+  const cards = Array.from(grid.querySelectorAll(".ws-card")).filter(
+    (el) => el.dataset.wsId !== draggedId
+  );
+  const siblings = cards
+    .map((el) => state.workspaces.find((w) => w.id === el.dataset.wsId))
+    .filter(Boolean);
+
+  let index = siblings.length;
+  for (let i = 0; i < cards.length; i += 1) {
+    const rect = cards[i].getBoundingClientRect();
+    const below = clientY < rect.top + rect.height / 2;
+    const rightOfRow =
+      clientY < rect.bottom && clientY >= rect.top && clientX < rect.left + rect.width / 2;
+    if (below || rightOfRow) {
+      index = i;
+      break;
+    }
+  }
+
+  const posOf = (w) => (typeof w.position === "number" ? w.position : 0);
+  if (!siblings.length) return 1;
+  if (index <= 0) return posOf(siblings[0]) - 1;
+  if (index >= siblings.length) return posOf(siblings[siblings.length - 1]) + 1;
+  return (posOf(siblings[index - 1]) + posOf(siblings[index])) / 2;
+}
+
+async function moveWorkspace(wsId, categoryId, position) {
+  const ws = state.workspaces.find((w) => w.id === wsId);
+  if (!ws) return;
+  const prev = { category_id: ws.category_id, position: ws.position };
+  ws.category_id = categoryId;
+  ws.position = position;
+  state.workspaces.sort((a, b) => (a.position || 0) - (b.position || 0));
+  renderHome();
+  try {
+    const res = await fetch(`/api/workspaces/${wsId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category_id: categoryId, position }),
+    });
+    if (!res.ok) throw new Error("Move failed");
+    const data = await res.json();
+    if (data.workspace) Object.assign(ws, data.workspace);
+  } catch (err) {
+    console.error(err);
+    ws.category_id = prev.category_id;
+    ws.position = prev.position;
+    await refreshHome();
+  }
+}
+
+async function createWorkspaceCategory() {
+  const title = (window.prompt("New category name") || "").trim();
+  if (!title) return;
+  try {
+    const res = await fetch("/api/workspace-categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) throw new Error("Create failed");
+    await refreshHome();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function renameWorkspaceCategory(cat) {
+  const title = (window.prompt("Rename category", cat.title || "") || "").trim();
+  if (!title || title === cat.title) return;
+  try {
+    const res = await fetch(`/api/workspace-categories/${cat.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) throw new Error("Rename failed");
+    await refreshHome();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function deleteWorkspaceCategory(cat) {
+  if (!window.confirm(`Delete category “${cat.title}”? Its workspaces move to Uncategorized.`))
+    return;
+  try {
+    const res = await fetch(`/api/workspace-categories/${cat.id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Delete failed");
+    await refreshHome();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function refreshHome() {
+  await fetchWorkspaces();
+  renderHome();
 }
 
 // ── Workspace detail: PDF list + shared file drawer ──────────────────────
@@ -4317,6 +4572,10 @@ function wireEvents() {
       if (created) navigate("workspace", { wsId: created.id });
     });
   }
+  if (els.homeAddCategoryBtn)
+    els.homeAddCategoryBtn.addEventListener("click", () =>
+      createWorkspaceCategory().catch(console.error)
+    );
   if (els.homeImportBtn && els.homeImportInput) {
     els.homeImportBtn.addEventListener("click", () => els.homeImportInput.click());
     els.homeImportInput.addEventListener("change", () => {

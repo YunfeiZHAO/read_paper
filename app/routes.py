@@ -27,27 +27,32 @@ from .db import (
     create_highlight,
     create_node,
     create_workspace,
+    create_workspace_category,
     db_connection,
     delete_category,
     delete_document,
     delete_highlight,
     delete_workspace,
+    delete_workspace_category,
     get_category,
     get_document,
     get_file,
     get_highlight,
     get_node,
     get_workspace,
+    get_workspace_category,
     link_highlight_to_node,
     list_categories,
     list_documents,
     list_files_for_workspace,
     list_highlights,
+    list_workspace_categories,
     list_workspaces,
     nodes_for_document,
     nodes_for_project,
     public_node,
     set_document_placement,
+    set_workspace_placement,
     touch_document,
     touch_workspace,
     unlink_note_file,
@@ -56,6 +61,7 @@ from .db import (
     update_highlight,
     update_node,
     update_workspace,
+    update_workspace_category,
 )
 from .events import (
     collect_tools_count,
@@ -344,7 +350,10 @@ def api_download_file(request: Request, file_id: str) -> Any:
 @router.get("/api/workspaces")
 def api_list_workspaces(request: Request, include_archived: str = "") -> Dict[str, Any]:
     _require_auth(request)
-    return {"workspaces": list_workspaces(include_archived=str(include_archived or "") == "1")}
+    return {
+        "workspaces": list_workspaces(include_archived=str(include_archived or "") == "1"),
+        "categories": list_workspace_categories(),
+    }
 
 
 @router.post("/api/workspaces")
@@ -404,8 +413,61 @@ async def api_patch_workspace(workspace_id: str, request: Request) -> Dict[str, 
         fields["api_key"] = str(payload["api_key"]).strip()
     elif payload.get("clear_api_key"):
         fields["api_key"] = ""
-    ws = update_workspace(workspace_id, **fields)
-    return {"workspace": ws}
+
+    # Home-dashboard placement (drag/reorder): applied when either key is present. Kept out
+    # of `fields`/update_workspace so it never collides with the title/LLM-settings logic.
+    if "category_id" in payload or "position" in payload:
+        category_id = payload.get("category_id")
+        category_id = str(category_id).strip() if category_id else None
+        if category_id and not get_workspace_category(category_id):
+            raise HTTPException(status_code=400, detail="Category does not exist")
+        try:
+            position = float(payload.get("position"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="position must be a number")
+        set_workspace_placement(workspace_id, category_id, position)
+
+    if fields:
+        update_workspace(workspace_id, **fields)
+    return {"workspace": get_workspace(workspace_id)}
+
+
+@router.post("/api/workspace-categories")
+async def api_create_workspace_category(request: Request) -> JSONResponse:
+    _require_auth(request)
+    payload = await _json_body(request)
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    return JSONResponse({"category": create_workspace_category(title)}, status_code=201)
+
+
+@router.patch("/api/workspace-categories/{category_id}")
+async def api_update_workspace_category(category_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
+    if not get_workspace_category(category_id):
+        raise HTTPException(status_code=404, detail="Category does not exist")
+    payload = await _json_body(request)
+    title = None
+    if "title" in payload:
+        title = str(payload["title"] or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+    position = None
+    if "position" in payload:
+        try:
+            position = float(payload["position"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="position must be a number")
+    return {"category": update_workspace_category(category_id, title=title, position=position)}
+
+
+@router.delete("/api/workspace-categories/{category_id}")
+def api_delete_workspace_category(request: Request, category_id: str) -> Dict[str, Any]:
+    _require_auth(request)
+    if not get_workspace_category(category_id):
+        raise HTTPException(status_code=404, detail="Category does not exist")
+    return {**delete_workspace_category(category_id)}
 
 
 @router.delete("/api/workspaces/{workspace_id}")

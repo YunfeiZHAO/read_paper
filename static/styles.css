@@ -2916,6 +2916,79 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
   gap: 14px;
   margin-top: 14px;
 }
+
+/* Home dashboard: workspace categories as stacked labeled sections */
+.home-section {
+  margin-top: 18px;
+  padding: 10px 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 55%, var(--panel));
+  transition: border-color 0.12s, background 0.12s;
+}
+.home-section.drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+.home-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 4px;
+}
+.home-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-section-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+.home-section-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.home-section:hover .home-section-actions { opacity: 1; }
+.home-section .home-grid { margin-top: 10px; }
+.ws-card.dragging { opacity: 0.4; }
+
+/* Per-document-category paper counts on the workspace card */
+.ws-card-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 4px;
+}
+.ws-card-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+.ws-card-cat-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-card-cat-n { font-weight: 600; color: var(--text); }
 .ws-card,
 .doc-card {
   position: relative;

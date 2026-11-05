@@ -158,6 +158,18 @@ def init_db() -> None:
                 last_opened_at TEXT
             );
 
+            -- Workspace categories group the top-level workspaces on the home dashboard
+            -- into labeled sections. They are GLOBAL (not scoped to a workspace) — distinct
+            -- from the `categories` table below, which groups a workspace's PDFs. A workspace
+            -- with category_id NULL is "Uncategorized" (an always-present section in the UI).
+            CREATE TABLE IF NOT EXISTS workspace_categories (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                position REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             -- Categories group a workspace's PDFs into kanban columns. A document with
             -- category_id NULL is "Uncategorized" (an always-present column in the UI).
             CREATE TABLE IF NOT EXISTS categories (
@@ -268,6 +280,13 @@ def init_db() -> None:
         for col in ("api_base_url", "api_key", "api_auth_type", "api_model"):
             if col not in ws_columns:
                 conn.execute(f"ALTER TABLE workspaces ADD COLUMN {col} TEXT")
+        # Home-dashboard categories: workspaces gain a nullable category_id (→ workspace_categories)
+        # and a float position (gap-based ordering) on old databases.
+        if "category_id" not in ws_columns:
+            conn.execute("ALTER TABLE workspaces ADD COLUMN category_id TEXT")
+        if "position" not in ws_columns:
+            conn.execute("ALTER TABLE workspaces ADD COLUMN position REAL NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspaces_category_id ON workspaces(category_id)")
 
         _migrate_node_notes_to_files(conn)
         _reconcile_notes(conn)
@@ -584,12 +603,17 @@ def create_workspace(title: str, description: str = "") -> Dict[str, Any]:
     ws_id = uuid.uuid4().hex
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:
+        # New workspaces append to the bottom of the Uncategorized section (category_id NULL).
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) AS m FROM workspaces WHERE category_id IS NULL"
+        ).fetchone()
+        position = float(row["m"] or 0) + 1.0
         conn.execute(
             """
-            INSERT INTO workspaces (id, title, description, created_at, updated_at, last_opened_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO workspaces (id, title, description, position, created_at, updated_at, last_opened_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (ws_id, (title or "Untitled workspace").strip(), description or "", created_at, created_at, created_at),
+            (ws_id, (title or "Untitled workspace").strip(), description or "", position, created_at, created_at, created_at),
         )
     ws = get_workspace(ws_id)
     if not ws:
@@ -637,7 +661,8 @@ def get_workspace_llm_settings(workspace_id: Optional[str]) -> Dict[str, Any]:
 
 
 def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
-    """List workspaces ordered by most-recently-opened, each annotated with its PDF count."""
+    """List workspaces ordered by board position (then recency), each annotated with its
+    total PDF count and a per-document-category breakdown for the home card."""
     where = "" if include_archived else "WHERE w.archived = 0"
     with DB_LOCK, db_connection() as conn:
         rows = conn.execute(
@@ -647,13 +672,42 @@ def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
                      WHERE d.workspace_id = w.id AND d.archived = 0) AS document_count
             FROM workspaces w
             {where}
-            ORDER BY COALESCE(w.last_opened_at, w.created_at) DESC
+            ORDER BY w.position ASC, COALESCE(w.last_opened_at, w.created_at) DESC
             """
         ).fetchall()
+        # Per-document-category paper counts, grouped once for every workspace.
+        count_rows = conn.execute(
+            """
+            SELECT d.workspace_id AS workspace_id,
+                   d.category_id AS category_id,
+                   c.title AS category_title,
+                   c.position AS category_position,
+                   COUNT(*) AS n
+            FROM documents d
+            LEFT JOIN categories c ON c.id = d.category_id
+            WHERE d.archived = 0
+            GROUP BY d.workspace_id, d.category_id
+            """
+        ).fetchall()
+    # Build {workspace_id: [{category_id, title, count}]}, ordered by category position with
+    # the NULL ("Uncategorized") group last.
+    counts_by_ws: Dict[str, List[Dict[str, Any]]] = {}
+    for r in count_rows:
+        counts_by_ws.setdefault(r["workspace_id"], []).append(
+            {
+                "category_id": r["category_id"],
+                "title": r["category_title"] if r["category_id"] else "Uncategorized",
+                "count": int(r["n"] or 0),
+                "_pos": (float(r["category_position"]) if r["category_id"] is not None else float("inf")),
+            }
+        )
+    for items in counts_by_ws.values():
+        items.sort(key=lambda it: (it.pop("_pos"), it["title"].lower()))
     out = []
     for row in rows:
         ws = public_workspace(row)
         ws["document_count"] = int(ws.get("document_count") or 0)
+        ws["category_counts"] = counts_by_ws.get(ws["id"], [])
         out.append(ws)
     return out
 
@@ -685,6 +739,95 @@ def touch_workspace(workspace_id: str) -> None:
             "UPDATE workspaces SET last_opened_at = ?, updated_at = ? WHERE id = ?",
             (now_iso(), now_iso(), workspace_id),
         )
+
+
+def set_workspace_placement(
+    workspace_id: str, category_id: Optional[str], position: float
+) -> Optional[Dict[str, Any]]:
+    """Move a workspace to a home-dashboard category (NULL = Uncategorized) at a float
+    position. Kept separate from update_workspace() so a drag never touches title/LLM fields."""
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            "UPDATE workspaces SET category_id = ?, position = ?, updated_at = ? WHERE id = ?",
+            (category_id, float(position), now_iso(), workspace_id),
+        )
+    return get_workspace(workspace_id)
+
+
+# ── workspace categories (home-dashboard sections, global) ──────────────
+
+def public_workspace_category(row: sqlite3.Row) -> Dict[str, Any]:
+    cat = dict(row)
+    cat["position"] = float(cat.get("position") or 0)
+    return cat
+
+
+def create_workspace_category(title: str) -> Dict[str, Any]:
+    cat_id = uuid.uuid4().hex
+    created_at = now_iso()
+    with DB_LOCK, db_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) AS m FROM workspace_categories"
+        ).fetchone()
+        position = float(row["m"] or 0) + 1.0
+        conn.execute(
+            "INSERT INTO workspace_categories (id, title, position, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (cat_id, title.strip() or "Untitled", position, created_at, created_at),
+        )
+    cat = get_workspace_category(cat_id)
+    if not cat:
+        raise RuntimeError("Failed to create workspace category")
+    return cat
+
+
+def get_workspace_category(category_id: str) -> Optional[Dict[str, Any]]:
+    with DB_LOCK, db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM workspace_categories WHERE id = ?", (category_id,)
+        ).fetchone()
+    return public_workspace_category(row) if row else None
+
+
+def list_workspace_categories() -> List[Dict[str, Any]]:
+    with DB_LOCK, db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM workspace_categories ORDER BY position ASC, created_at ASC"
+        ).fetchall()
+    return [public_workspace_category(row) for row in rows]
+
+
+def update_workspace_category(
+    category_id: str, *, title: Optional[str] = None, position: Optional[float] = None
+) -> Optional[Dict[str, Any]]:
+    sets: List[str] = []
+    params: List[Any] = []
+    if title is not None:
+        sets.append("title = ?")
+        params.append(title.strip() or "Untitled")
+    if position is not None:
+        sets.append("position = ?")
+        params.append(float(position))
+    if sets:
+        sets.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(category_id)
+        with DB_LOCK, db_connection() as conn:
+            conn.execute(
+                f"UPDATE workspace_categories SET {', '.join(sets)} WHERE id = ?", params
+            )
+    return get_workspace_category(category_id)
+
+
+def delete_workspace_category(category_id: str) -> Dict[str, Any]:
+    """Delete a home category; its workspaces fall back to Uncategorized (category_id NULL)."""
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            "UPDATE workspaces SET category_id = NULL, updated_at = ? WHERE category_id = ?",
+            (now_iso(), category_id),
+        )
+        conn.execute("DELETE FROM workspace_categories WHERE id = ?", (category_id,))
+    return {"deleted": True}
 
 
 def delete_workspace(workspace_id: str) -> Dict[str, Any]:
