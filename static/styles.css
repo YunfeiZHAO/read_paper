@@ -2871,6 +2871,29 @@ body.hide-reader-controls .reader-only { display: none !important; }
   text-transform: uppercase;
   color: var(--muted-2);
 }
+
+/* Foldable "Model & API settings" section */
+.ws-settings-fold { margin-top: 26px; }
+.ws-settings-summary {
+  margin: 0 0 12px;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+.ws-settings-summary::-webkit-details-marker { display: none; }
+/* Disclosure triangle that rotates when open. */
+.ws-settings-summary::before {
+  content: "▸";
+  font-size: 11px;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+.ws-settings-fold[open] > .ws-settings-summary::before { transform: rotate(90deg); }
+.ws-settings-summary:hover { color: var(--muted); }
+.ws-settings-fold[open] > .ws-settings-summary { margin-bottom: 12px; }
 .screen-empty {
   padding: 28px;
   border: 1px dashed var(--line-strong);
@@ -3048,7 +3071,8 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
 }
 .doc-card:hover .doc-card-buttons { opacity: 1; }
 .doc-card-rename,
-.doc-card-del {
+.doc-card-del,
+.doc-card-dl {
   width: 26px;
   height: 26px;
   border: 1px solid var(--line);
@@ -3058,7 +3082,16 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
   cursor: pointer;
   transition: border-color 0.12s, color 0.12s;
 }
+/* The download button is an <a>; center its glyph like the <button> siblings. */
+.doc-card-dl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  font-size: 13px;
+}
 .doc-card-rename:hover { border-color: var(--accent); color: var(--accent); }
+.doc-card-dl:hover { border-color: var(--accent); color: var(--accent); }
 .doc-card-del:hover { border-color: var(--red); color: var(--red); }
 
 /* Kanban board: categories as columns (workspace detail) */
@@ -3273,3 +3306,204 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
   font-size: 13px;
   margin-top: 8px;
 }
+
+/* ── Study-deadline urgency ─────────────────────────────────────────────── */
+:root {
+  --u-calm: #5f9e7f;
+  --u-approaching: #c99a2e;
+  --u-soon: #d98324;
+  --u-urgent: #d64545;
+  --u-overdue: #a01f1f;
+  --u-studied: #2f7d51;
+}
+[data-theme="dark"] {
+  --u-calm: #5bb98a;
+  --u-approaching: #d9b94e;
+  --u-soon: #e5953f;
+  --u-urgent: #e46060;
+  --u-overdue: #c94747;
+  --u-studied: #4da86e;
+}
+
+/* Card tint: a colored left edge + faint background wash. Shared by PDF cards
+   (workspace board) and workspace cards (home dashboard). ".u-none" = no tint. */
+.doc-card.u-calm, .ws-card.u-calm,
+.doc-card.u-approaching, .ws-card.u-approaching,
+.doc-card.u-soon, .ws-card.u-soon,
+.doc-card.u-urgent, .ws-card.u-urgent,
+.doc-card.u-overdue, .ws-card.u-overdue,
+.doc-card.u-studied, .ws-card.u-studied {
+  border-left-width: 4px;
+  border-left-style: solid;
+}
+.doc-card.u-calm, .ws-card.u-calm { border-left-color: var(--u-calm); background: linear-gradient(90deg, color-mix(in srgb, var(--u-calm) 12%, var(--panel)), var(--panel) 55%); }
+.doc-card.u-approaching, .ws-card.u-approaching { border-left-color: var(--u-approaching); background: linear-gradient(90deg, color-mix(in srgb, var(--u-approaching) 13%, var(--panel)), var(--panel) 55%); }
+.doc-card.u-soon, .ws-card.u-soon { border-left-color: var(--u-soon); background: linear-gradient(90deg, color-mix(in srgb, var(--u-soon) 15%, var(--panel)), var(--panel) 55%); }
+.doc-card.u-urgent, .ws-card.u-urgent { border-left-color: var(--u-urgent); background: linear-gradient(90deg, color-mix(in srgb, var(--u-urgent) 18%, var(--panel)), var(--panel) 55%); }
+.doc-card.u-overdue, .ws-card.u-overdue { border-left-color: var(--u-overdue); background: linear-gradient(90deg, color-mix(in srgb, var(--u-overdue) 22%, var(--panel)), var(--panel) 55%); }
+.doc-card.u-studied, .ws-card.u-studied { border-left-color: var(--u-studied); background: linear-gradient(90deg, color-mix(in srgb, var(--u-studied) 15%, var(--panel)), var(--panel) 55%); }
+
+/* PDF-card study-schedule row */
+.doc-card-sched {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 12px 12px;
+}
+.doc-sched-studied {
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.doc-sched-studied:hover { border-color: var(--u-studied); color: var(--u-studied); }
+.doc-sched-studied.on {
+  background: color-mix(in srgb, var(--u-studied) 20%, var(--panel));
+  border-color: var(--u-studied);
+  color: var(--u-studied);
+  font-weight: 600;
+}
+.doc-sched-date {
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  color-scheme: light dark;
+  cursor: pointer;
+}
+.doc-sched-date:hover { border-color: var(--accent); }
+.doc-sched-chip { font-size: 11px; color: var(--muted); margin-left: auto; }
+.doc-card.u-overdue .doc-sched-chip { color: var(--u-overdue); font-weight: 600; }
+
+/* Home workspace-card urgency chip */
+.ws-card-due {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.ws-card-due.u-calm { background: color-mix(in srgb, var(--u-calm) 18%, var(--panel)); color: var(--u-calm); }
+.ws-card-due.u-approaching { background: color-mix(in srgb, var(--u-approaching) 20%, var(--panel)); color: var(--u-approaching); }
+.ws-card-due.u-soon { background: color-mix(in srgb, var(--u-soon) 20%, var(--panel)); color: var(--u-soon); }
+.ws-card-due.u-urgent { background: color-mix(in srgb, var(--u-urgent) 22%, var(--panel)); color: var(--u-urgent); }
+.ws-card-due.u-overdue { background: color-mix(in srgb, var(--u-overdue) 24%, var(--panel)); color: var(--u-overdue); animation: u-pulse 1.8s ease-in-out infinite; }
+
+@keyframes u-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+/* Gantt timeline */
+.ws-gantt { padding: 4px 0 8px; }
+.gantt { display: flex; flex-direction: column; gap: 6px; }
+.gantt-axis { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+.gantt-row { display: flex; align-items: center; gap: 10px; }
+.gantt-label {
+  flex: 0 0 180px;
+  width: 180px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text);
+  background: none;
+  border: none;
+  padding: 4px 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.gantt-label:hover { color: var(--accent); }
+.gantt-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 22px;
+  background: color-mix(in srgb, var(--panel) 65%, var(--bg));
+  border-radius: 5px;
+}
+.gantt-axis-track { height: 16px; background: none; }
+.gantt-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.gantt-today {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--accent-2);
+  opacity: 0.85;
+  z-index: 2;
+}
+.gantt-bar {
+  position: absolute;
+  top: 3px;
+  height: 16px;
+  min-width: 4px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: var(--line-strong);
+  opacity: 0.9;
+  transition: opacity 0.12s;
+}
+.gantt-bar:hover { opacity: 1; }
+.gantt-bar.u-calm { background: var(--u-calm); }
+.gantt-bar.u-approaching { background: var(--u-approaching); }
+.gantt-bar.u-soon { background: var(--u-soon); }
+.gantt-bar.u-urgent { background: var(--u-urgent); }
+.gantt-bar.u-overdue { background: var(--u-overdue); }
+.gantt-bar.u-studied { background: var(--u-studied); }
+
+.gantt-unscheduled { margin-top: 14px; }
+.gantt-unscheduled-head { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.gantt-unscheduled-chip {
+  font-size: 12px;
+  padding: 4px 10px;
+  margin: 0 6px 6px 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.gantt-unscheduled-chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Per-row size + download on the timeline (and matching axis spacers) */
+.gantt-meta {
+  flex: 0 0 64px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.gantt-dl {
+  flex: 0 0 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 12px;
+  transition: border-color 0.12s, color 0.12s;
+}
+.gantt-dl:hover { border-color: var(--accent); color: var(--accent); }
+.gantt-dl-spacer { border-color: transparent; background: none; pointer-events: none; }
+
+/* Category titles are double-click-to-rename (in addition to the ✎ button) */
+.renamable { cursor: text; }
+.renamable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }

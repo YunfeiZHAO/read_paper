@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +59,7 @@ from .db import (
     unlink_note_file,
     update_category,
     update_document,
+    update_document_schedule,
     update_highlight,
     update_node,
     update_workspace,
@@ -546,6 +548,7 @@ async def api_create_document(
     title: str = Form(""),
     num_pages: Optional[int] = Form(None),
     workspace_id: str = Form(""),
+    category_id: str = Form(""),
 ) -> JSONResponse:
     _require_auth(request)
     if not file.filename:
@@ -553,11 +556,13 @@ async def api_create_document(
     workspace_id = (workspace_id or "").strip() or None
     if workspace_id and not get_workspace(workspace_id):
         raise HTTPException(status_code=400, detail="Workspace does not exist")
+    category_id = (category_id or "").strip() or None
     data = await file.read()
     saved = store_upload(file.filename, data, file.content_type, workspace_id=workspace_id)
     try:
         doc = create_document(
-            saved["id"], title or saved["original_name"], saved["original_name"], num_pages, workspace_id=workspace_id
+            saved["id"], title or saved["original_name"], saved["original_name"], num_pages,
+            workspace_id=workspace_id, category_id=category_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -608,6 +613,28 @@ async def api_update_document(document_id: str, request: Request) -> Dict[str, A
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="position must be a number")
         set_document_placement(document_id, category_id, position)
+
+    # Study-schedule update: a deadline date and/or a studied toggle.
+    if "deadline" in body or "studied" in body:
+        kwargs: Dict[str, Any] = {}
+        if "deadline" in body:
+            raw = body.get("deadline")
+            if raw in (None, ""):
+                kwargs["deadline"] = None
+            else:
+                deadline = str(raw).strip()
+                try:
+                    datetime.strptime(deadline, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400, detail="deadline must be an ISO date (YYYY-MM-DD) or null"
+                    )
+                kwargs["deadline"] = deadline
+        if "studied" in body:
+            if not isinstance(body.get("studied"), bool):
+                raise HTTPException(status_code=400, detail="studied must be a boolean")
+            kwargs["studied"] = body["studied"]
+        update_document_schedule(document_id, **kwargs)
 
     # Title update (rename): only when a title key is actually sent.
     if "title" in body:

@@ -192,6 +192,8 @@ def init_db() -> None:
                 category_id TEXT,
                 position REAL NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
+                deadline TEXT,
+                studied_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_opened_at TEXT,
@@ -268,6 +270,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE documents ADD COLUMN category_id TEXT")
         if "position" not in doc_columns:
             conn.execute("ALTER TABLE documents ADD COLUMN position REAL NOT NULL DEFAULT 0")
+        # Study schedule: a nullable deadline (ISO date) and studied_at timestamp
+        # (NULL = not yet studied). Added here on old databases.
+        if "deadline" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN deadline TEXT")
+        if "studied_at" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN studied_at TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_category_id ON documents(category_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_categories_workspace_id ON categories(workspace_id)")
@@ -669,7 +677,10 @@ def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
             f"""
             SELECT w.*,
                    (SELECT COUNT(*) FROM documents d
-                     WHERE d.workspace_id = w.id AND d.archived = 0) AS document_count
+                     WHERE d.workspace_id = w.id AND d.archived = 0) AS document_count,
+                   (SELECT MIN(d.deadline) FROM documents d
+                     WHERE d.workspace_id = w.id AND d.archived = 0
+                       AND d.studied_at IS NULL AND d.deadline IS NOT NULL) AS urgent_deadline
             FROM workspaces w
             {where}
             ORDER BY w.position ASC, COALESCE(w.last_opened_at, w.created_at) DESC
@@ -897,6 +908,7 @@ def list_files_for_workspace(workspace_id: str) -> List[Dict[str, Any]]:
 def public_document(row: sqlite3.Row) -> Dict[str, Any]:
     doc = dict(row)
     doc["archived"] = bool(doc.get("archived"))
+    doc["studied"] = bool(doc.get("studied_at"))
     return doc
 
 
@@ -913,27 +925,32 @@ def create_document(
     original_name: str,
     num_pages: Optional[int],
     workspace_id: Optional[str] = None,
+    category_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not get_file(file_id):
         raise ValueError("File does not exist")
     if workspace_id and not get_workspace(workspace_id):
         raise ValueError("Workspace does not exist")
+    category_id = category_id or None
+    if category_id and not get_category(category_id):
+        raise ValueError("Category does not exist")
     doc_id = uuid.uuid4().hex
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:
-        # New PDFs append to the bottom of the Uncategorized column (category_id NULL).
+        # New PDFs append to the bottom of their target column (category_id, or NULL
+        # for Uncategorized). `IS` matches NULL correctly.
         row = conn.execute(
             "SELECT COALESCE(MAX(position), 0) AS m FROM documents "
-            "WHERE workspace_id IS ? AND category_id IS NULL",
-            (workspace_id,),
+            "WHERE workspace_id IS ? AND category_id IS ?",
+            (workspace_id, category_id),
         ).fetchone()
         position = float(row["m"] or 0) + 1.0
         conn.execute(
             """
-            INSERT INTO documents (id, workspace_id, file_id, title, original_name, num_pages, position, created_at, updated_at, last_opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (id, workspace_id, file_id, title, original_name, num_pages, category_id, position, created_at, updated_at, last_opened_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (doc_id, workspace_id, file_id, title or original_name, original_name, num_pages, position, created_at, created_at, created_at),
+            (doc_id, workspace_id, file_id, title or original_name, original_name, num_pages, category_id, position, created_at, created_at, created_at),
         )
     doc = get_document(doc_id)
     if not doc:
@@ -941,9 +958,14 @@ def create_document(
     return doc
 
 
+# Documents are always selected with their file's byte size joined in (as `size`),
+# so the UI can show a size and a download affordance per paper.
+_DOC_SELECT = "SELECT d.*, f.size AS size FROM documents d LEFT JOIN files f ON f.id = d.file_id"
+
+
 def get_document(document_id: str) -> Optional[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
-        row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+        row = conn.execute(f"{_DOC_SELECT} WHERE d.id = ?", (document_id,)).fetchone()
     return public_document(row) if row else None
 
 
@@ -951,14 +973,14 @@ def list_documents(workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
         if workspace_id:
             rows = conn.execute(
-                "SELECT * FROM documents WHERE archived = 0 AND workspace_id = ? "
-                "ORDER BY position ASC, COALESCE(last_opened_at, created_at) DESC",
+                f"{_DOC_SELECT} WHERE d.archived = 0 AND d.workspace_id = ? "
+                "ORDER BY d.position ASC, COALESCE(d.last_opened_at, d.created_at) DESC",
                 (workspace_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM documents WHERE archived = 0 "
-                "ORDER BY position ASC, COALESCE(last_opened_at, created_at) DESC"
+                f"{_DOC_SELECT} WHERE d.archived = 0 "
+                "ORDER BY d.position ASC, COALESCE(d.last_opened_at, d.created_at) DESC"
             ).fetchall()
     return [public_document(row) for row in rows]
 
@@ -1051,6 +1073,39 @@ def set_document_placement(
         conn.execute(
             "UPDATE documents SET category_id = ?, position = ?, updated_at = ? WHERE id = ?",
             (category_id, float(position), now_iso(), document_id),
+        )
+    return get_document(document_id)
+
+
+_UNSET = object()  # sentinel: "argument not supplied" (distinct from an explicit None)
+
+
+def update_document_schedule(
+    document_id: str,
+    *,
+    deadline: Any = _UNSET,
+    studied: Any = _UNSET,
+) -> Optional[Dict[str, Any]]:
+    """Partial update of a document's study schedule. Pass `deadline` as an ISO date string
+    or None to clear it; pass `studied` as a bool (True stamps studied_at = now, False clears
+    it). Omitted arguments are left untouched. Never touches the file on disk."""
+    sets: List[str] = []
+    params: List[Any] = []
+    if deadline is not _UNSET:
+        sets.append("deadline = ?")
+        params.append(deadline or None)
+    if studied is not _UNSET:
+        sets.append("studied_at = ?")
+        params.append(now_iso() if studied else None)
+    if not sets:
+        return get_document(document_id)
+    sets.append("updated_at = ?")
+    params.append(now_iso())
+    params.append(document_id)
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            f"UPDATE documents SET {', '.join(sets)} WHERE id = ?",
+            params,
         )
     return get_document(document_id)
 

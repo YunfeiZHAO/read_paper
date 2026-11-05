@@ -187,7 +187,10 @@ const els = {
   wsAddPdfBtn: document.getElementById("wsAddPdfBtn"),
   wsAddCategoryBtn: document.getElementById("wsAddCategoryBtn"),
   wsBoard: document.getElementById("wsBoard"),
+  wsGantt: document.getElementById("wsGantt"),
+  wsFilesLabel: document.getElementById("wsFilesLabel"),
   wsFileList: document.getElementById("wsFileList"),
+  wsSettingsFold: document.getElementById("wsSettingsFold"),
   wsSettingsForm: document.getElementById("wsSettingsForm"),
   wsApiBaseUrl: document.getElementById("wsApiBaseUrl"),
   wsApiAuthType: document.getElementById("wsApiAuthType"),
@@ -653,7 +656,8 @@ function renderBreadcrumb() {
 // Build one workspace card (draggable). Reused for every home section.
 function buildWorkspaceCard(ws) {
   const card = document.createElement("div");
-  card.className = "ws-card";
+  // Tint the card by its most urgent unstudied paper (urgent_deadline from the API).
+  card.className = "ws-card u-" + urgencyLevelFromDate(ws.urgent_deadline, false);
   card.draggable = true;
   card.dataset.wsId = ws.id;
 
@@ -686,6 +690,15 @@ function buildWorkspaceCard(ws) {
   const when = (ws.last_opened_at || "").slice(0, 10);
   meta.textContent = `${ws.document_count || 0} PDF` + (when ? `  ·  ${when}` : "");
   body.append(title, meta);
+
+  // Urgency chip: the soonest unstudied deadline across the workspace's papers.
+  const dueLabel = deadlineLabel(ws.urgent_deadline, false);
+  if (dueLabel) {
+    const due = document.createElement("div");
+    due.className = "ws-card-due u-" + urgencyLevelFromDate(ws.urgent_deadline, false);
+    due.textContent = dueLabel;
+    body.append(due);
+  }
 
   // Per-document-category paper-count breakdown (e.g. "Machine Learning 3 · Finance 2").
   const counts = Array.isArray(ws.category_counts) ? ws.category_counts : [];
@@ -799,6 +812,11 @@ function buildHomeSection(sectionId, title, workspaces, category) {
   const label = document.createElement("div");
   label.className = "home-section-title";
   label.textContent = title;
+  if (category) {
+    label.title = "Double-click to rename";
+    label.classList.add("renamable");
+    label.addEventListener("dblclick", () => renameWorkspaceCategory(category).catch(console.error));
+  }
   const count = document.createElement("span");
   count.className = "home-section-count";
   count.textContent = String(workspaces.length);
@@ -995,16 +1013,20 @@ function renderWorkspaceDetail() {
     els.wsDesc.hidden = !(ws && ws.description);
   }
 
-  renderBoard();
+  renderWsView();
 
   if (els.wsFileList) {
-    const files = state.wsDetail.files;
-    if (!files.length) {
-      const empty = document.createElement("div");
-      empty.className = "screen-empty";
-      empty.textContent = "No shared files in this workspace.";
-      els.wsFileList.replaceChildren(empty);
-    } else {
+    // Exclude the PDF files that back papers — those already have download + size
+    // on their cards and the timeline. Only genuine non-paper files remain here.
+    const paperFileIds = new Set(
+      (state.wsDetail.documents || []).map((d) => d.file_id).filter(Boolean)
+    );
+    const files = (state.wsDetail.files || []).filter((f) => !paperFileIds.has(f.id));
+    // Hide the whole block (heading included) when there's nothing non-paper to show.
+    const hide = files.length === 0;
+    if (els.wsFilesLabel) els.wsFilesLabel.hidden = hide;
+    els.wsFileList.hidden = hide;
+    if (!hide) {
       const rows = files.map((f) => {
         const row = document.createElement("a");
         row.className = "ws-file-row";
@@ -1025,6 +1047,200 @@ function renderWorkspaceDetail() {
   renderWorkspaceSettings(ws);
 }
 
+// Render both workspace views: the Kanban board and, directly beneath it, the
+// Gantt timeline of paper deadlines.
+function renderWsView() {
+  renderBoard();
+  renderGantt();
+}
+
+// Gantt-style timeline: one bar per scheduled paper, spanning its add-date →
+// deadline, colored by the same urgency ramp as the cards, with a "today" line.
+function renderGantt() {
+  if (!els.wsGantt) return;
+  const docs = state.wsDetail.documents || [];
+  const parseTime = (s) => {
+    const t = s ? Date.parse(s) : NaN;
+    return Number.isFinite(t) ? t : null;
+  };
+  const scheduled = docs
+    .filter((d) => d.deadline)
+    .map((d) => {
+      const end = parseTime(d.deadline);
+      let start = parseTime(d.created_at);
+      if (start === null || start > end) start = end - 7 * DAY_MS; // fallback span
+      return { doc: d, start, end };
+    })
+    .filter((r) => r.end !== null)
+    .sort((a, b) => a.end - b.end);
+  const unscheduled = docs.filter((d) => !d.deadline);
+
+  els.wsGantt.replaceChildren();
+
+  if (!scheduled.length) {
+    const empty = document.createElement("div");
+    empty.className = "screen-empty";
+    empty.textContent = "No papers have a deadline yet. Set one on a card to see the timeline.";
+    els.wsGantt.append(empty);
+  } else {
+    const now = Date.now();
+    let lo = Math.min(now, ...scheduled.map((r) => r.start));
+    let hi = Math.max(now, ...scheduled.map((r) => r.end));
+    if (hi === lo) hi = lo + DAY_MS;
+    const pad = (hi - lo) * 0.04;
+    lo -= pad;
+    hi += pad;
+    const frac = (t) => Math.max(0, Math.min(1, (t - lo) / (hi - lo)));
+    const pct = (t) => (frac(t) * 100).toFixed(2) + "%";
+
+    const chart = document.createElement("div");
+    chart.className = "gantt";
+
+    // Axis: evenly spaced date ticks across the track.
+    const axis = document.createElement("div");
+    axis.className = "gantt-axis";
+    const spacer = document.createElement("div");
+    spacer.className = "gantt-label";
+    const axisTrack = document.createElement("div");
+    axisTrack.className = "gantt-track gantt-axis-track";
+    const TICKS = 6;
+    for (let i = 0; i <= TICKS; i++) {
+      const t = lo + ((hi - lo) * i) / TICKS;
+      const tick = document.createElement("span");
+      tick.className = "gantt-tick";
+      tick.style.left = ((i / TICKS) * 100).toFixed(2) + "%";
+      const dt = new Date(t);
+      tick.textContent = `${dt.getMonth() + 1}/${dt.getDate()}`;
+      axisTrack.append(tick);
+    }
+    // Trailing spacers so the axis track width matches the rows (which reserve
+    // room for the per-row size + download), keeping the "today" line aligned.
+    const metaSpacer = document.createElement("span");
+    metaSpacer.className = "gantt-meta";
+    const dlSpacer = document.createElement("span");
+    dlSpacer.className = "gantt-dl gantt-dl-spacer";
+    axis.append(spacer, axisTrack, metaSpacer, dlSpacer);
+    chart.append(axis);
+
+    scheduled.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "gantt-row";
+
+      const label = document.createElement("button");
+      label.type = "button";
+      label.className = "gantt-label";
+      label.textContent = r.doc.title || r.doc.original_name || "Untitled";
+      label.title = label.textContent;
+      label.addEventListener("click", () =>
+        navigate("reader", { wsId: state.currentWorkspaceId, docId: r.doc.id })
+      );
+
+      const track = document.createElement("div");
+      track.className = "gantt-track";
+
+      const today = document.createElement("div");
+      today.className = "gantt-today";
+      today.style.left = pct(now);
+      track.append(today);
+
+      const bar = document.createElement("button");
+      bar.type = "button";
+      bar.className = "gantt-bar u-" + urgencyLevel(r.doc, now);
+      bar.style.left = pct(r.start);
+      bar.style.width =
+        Math.max(0, frac(r.end) - frac(r.start)) * 100 + "%";
+      const lbl = deadlineLabel(r.doc.deadline, r.doc.studied, now);
+      bar.title = `${label.textContent}${lbl ? " — " + lbl : ""}`;
+      bar.addEventListener("click", () =>
+        navigate("reader", { wsId: state.currentWorkspaceId, docId: r.doc.id })
+      );
+      track.append(bar);
+
+      const meta = document.createElement("span");
+      meta.className = "gantt-meta";
+      meta.textContent = r.doc.size ? formatBytes(r.doc.size) : "";
+
+      const download = document.createElement("a");
+      download.className = "gantt-dl";
+      download.title = "Download PDF";
+      download.textContent = "⬇";
+      download.href = `/api/documents/${r.doc.id}/file`;
+      download.setAttribute("download", r.doc.original_name || r.doc.title || "paper.pdf");
+
+      row.append(label, track, meta, download);
+      chart.append(row);
+    });
+
+    els.wsGantt.append(chart);
+  }
+
+  if (unscheduled.length) {
+    const foot = document.createElement("div");
+    foot.className = "gantt-unscheduled";
+    const head = document.createElement("div");
+    head.className = "gantt-unscheduled-head";
+    head.textContent = `No deadline (${unscheduled.length})`;
+    foot.append(head);
+    unscheduled.forEach((d) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "gantt-unscheduled-chip";
+      chip.textContent = d.title || d.original_name || "Untitled";
+      chip.addEventListener("click", () =>
+        navigate("reader", { wsId: state.currentWorkspaceId, docId: d.id })
+      );
+      foot.append(chip);
+    });
+    els.wsGantt.append(foot);
+  }
+}
+
+// ── Study-deadline urgency ────────────────────────────────────────────────
+// Single source of truth for the deadline color ramp, reused by the PDF card,
+// the Gantt timeline, and the home workspace-card tint. Thresholds are in days
+// remaining; tweak freely. A studied paper is always green; a paper with no
+// deadline gets no tint ("none").
+const URGENCY = { urgent: 1, soon: 3, approaching: 7, calm: 14 };
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Whole days from `now` until the end of the deadline day (local time). A deadline
+// of today → 0, tomorrow → 1, yesterday → -1.
+function daysUntil(deadlineStr, now = Date.now()) {
+  if (!deadlineStr) return null;
+  const parts = String(deadlineStr).slice(0, 10).split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  const end = new Date(parts[0], parts[1] - 1, parts[2]).getTime() + DAY_MS; // end of that day
+  return Math.floor((end - now) / DAY_MS);
+}
+
+function urgencyLevelFromDate(deadlineStr, studied, now = Date.now()) {
+  if (studied) return "studied";
+  const d = daysUntil(deadlineStr, now);
+  if (d === null) return "none";
+  if (d < 0) return "overdue";
+  if (d <= URGENCY.urgent) return "urgent";
+  if (d <= URGENCY.soon) return "soon";
+  if (d <= URGENCY.approaching) return "approaching";
+  if (d <= URGENCY.calm) return "calm";
+  return "none";
+}
+
+function urgencyLevel(doc, now = Date.now()) {
+  return urgencyLevelFromDate(doc && doc.deadline, doc && doc.studied, now);
+}
+
+// Short human label for a deadline, e.g. "studied", "overdue 2d", "due today",
+// "due in 5d". Returns "" when there's nothing to show.
+function deadlineLabel(deadlineStr, studied, now = Date.now()) {
+  if (studied) return "studied";
+  const d = daysUntil(deadlineStr, now);
+  if (d === null) return "";
+  if (d < 0) return `overdue ${-d}d`;
+  if (d === 0) return "due today";
+  if (d === 1) return "due tomorrow";
+  return `due in ${d}d`;
+}
+
 // ── Kanban board: categories as columns, PDF cards draggable between them ──
 
 const UNCATEGORIZED = "__uncat__"; // sentinel column id for documents with no category
@@ -1032,7 +1248,7 @@ const UNCATEGORIZED = "__uncat__"; // sentinel column id for documents with no c
 // Build one PDF card (draggable). Reused for every column.
 function buildDocCard(doc) {
   const card = document.createElement("div");
-  card.className = "doc-card";
+  card.className = "doc-card u-" + urgencyLevel(doc);
   card.draggable = true;
   card.dataset.docId = doc.id;
 
@@ -1064,11 +1280,21 @@ function buildDocCard(doc) {
   t.textContent = doc.title || doc.original_name || "Untitled";
   const m = document.createElement("div");
   m.className = "doc-card-meta";
-  m.textContent = doc.num_pages ? `${doc.num_pages} pages` : "PDF";
+  const metaParts = [doc.num_pages ? `${doc.num_pages} pages` : "PDF"];
+  if (doc.size) metaParts.push(formatBytes(doc.size));
+  m.textContent = metaParts.join("  ·  ");
   body.append(t, m);
 
   const buttons = document.createElement("div");
   buttons.className = "doc-card-buttons";
+
+  const download = document.createElement("a");
+  download.className = "doc-card-dl";
+  download.title = "Download PDF";
+  download.textContent = "⬇";
+  download.href = `/api/documents/${doc.id}/file`;
+  download.setAttribute("download", doc.original_name || doc.title || "paper.pdf");
+  download.addEventListener("click", (e) => e.stopPropagation());
 
   const rename = document.createElement("button");
   rename.type = "button";
@@ -1090,9 +1316,72 @@ function buildDocCard(doc) {
     deleteDocument(doc).catch(console.error);
   });
 
-  buttons.append(rename, del);
-  card.append(body, buttons);
+  buttons.append(download, rename, del);
+
+  // Study-schedule row: a "studied" toggle, a deadline date input, and a small
+  // status chip. Everything here stops propagation so clicks don't open the reader.
+  const sched = document.createElement("div");
+  sched.className = "doc-card-sched";
+
+  const studied = document.createElement("button");
+  studied.type = "button";
+  studied.className = "doc-sched-studied" + (doc.studied ? " on" : "");
+  studied.title = doc.studied ? "Studied — click to unmark" : "Mark as studied";
+  studied.textContent = doc.studied ? "✓ studied" : "mark studied";
+  studied.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setDocSchedule(doc, { studied: !doc.studied }).catch(console.error);
+  });
+
+  const date = document.createElement("input");
+  date.type = "date";
+  date.className = "doc-sched-date";
+  date.title = "Set deadline";
+  date.value = (doc.deadline || "").slice(0, 10);
+  date.addEventListener("mousedown", (e) => e.stopPropagation());
+  // Clicking anywhere on the field pops the calendar (not just the tiny indicator).
+  date.addEventListener("click", (e) => {
+    e.stopPropagation();
+    try {
+      date.showPicker();
+    } catch (_) {}
+  });
+  date.addEventListener("change", (e) => {
+    e.stopPropagation();
+    setDocSchedule(doc, { deadline: date.value || null }).catch(console.error);
+  });
+
+  sched.append(studied, date);
+  const label = deadlineLabel(doc.deadline, doc.studied);
+  if (label) {
+    const chip = document.createElement("span");
+    chip.className = "doc-sched-chip";
+    chip.textContent = label;
+    sched.append(chip);
+  }
+
+  card.append(body, buttons, sched);
   return card;
+}
+
+// Persist a document's deadline/studied change, update local state, and re-render
+// whichever workspace view is open (board or timeline) plus the home tint source.
+async function setDocSchedule(doc, patch) {
+  const res = await fetch(`/api/documents/${doc.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    console.error("Failed to update schedule", await res.text());
+    return;
+  }
+  const data = await res.json();
+  const updated = data && data.document;
+  const list = state.wsDetail.documents || [];
+  const idx = list.findIndex((d) => d.id === doc.id);
+  if (idx >= 0) list[idx] = updated || { ...list[idx], ...patch };
+  renderWorkspaceDetail();
 }
 
 function clearDropMarkers() {
@@ -1137,6 +1426,11 @@ function buildColumn(colId, title, docs, category) {
   const label = document.createElement("div");
   label.className = "ws-col-title";
   label.textContent = title;
+  if (category) {
+    label.title = "Double-click to rename";
+    label.classList.add("renamable");
+    label.addEventListener("dblclick", () => renameCategory(category).catch(console.error));
+  }
   const count = document.createElement("span");
   count.className = "ws-col-count";
   count.textContent = String(docs.length);
@@ -1178,11 +1472,15 @@ function buildColumn(colId, title, docs, category) {
     bodyWrap.append(empty);
   }
 
-  // Drop target: the whole column.
+  const newCategoryId = colId === UNCATEGORIZED ? null : colId;
+
+  // Drop target: the whole column. Accepts both an internal card drag (reorder /
+  // move between columns) and an external file drag (upload PDFs into this column).
   col.addEventListener("dragover", (e) => {
-    if (!state.dragDocId) return;
+    const isFile = e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+    if (!state.dragDocId && !isFile) return;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    if (e.dataTransfer) e.dataTransfer.dropEffect = isFile ? "copy" : "move";
     col.classList.add("drag-over");
   });
   col.addEventListener("dragleave", (e) => {
@@ -1192,10 +1490,16 @@ function buildColumn(colId, title, docs, category) {
   col.addEventListener("drop", (e) => {
     e.preventDefault();
     col.classList.remove("drag-over");
+    // External files dropped from the OS → upload them into this column.
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) {
+      state.dragDocId = null;
+      uploadFilesToCategory(files, newCategoryId).catch(console.error);
+      return;
+    }
     const docId = state.dragDocId;
     state.dragDocId = null;
     if (!docId) return;
-    const newCategoryId = colId === UNCATEGORIZED ? null : colId;
     const position = computeDropPosition(bodyWrap, newCategoryId, docId, e.clientY);
     moveDocument(docId, newCategoryId, position).catch(console.error);
   });
@@ -4421,12 +4725,13 @@ function setDarkMode(dark) {
   applyDarkMode();
 }
 
-async function uploadPdf(file) {
+async function uploadPdf(file, categoryId = null) {
   if (!file || !state.currentWorkspaceId) return;
   const wsId = state.currentWorkspaceId;
   const form = new FormData();
   form.append("file", file);
   form.append("workspace_id", wsId);
+  if (categoryId) form.append("category_id", categoryId);
   try {
     const res = await fetch("/api/documents", { method: "POST", body: form });
     const data = await res.json();
@@ -4442,6 +4747,22 @@ async function uploadPdf(file) {
     }
   } catch (err) {
     window.alert(err.message);
+  }
+}
+
+// Upload one or more OS-dropped files into a specific board column (categoryId,
+// or null for Uncategorized). Non-PDF files are skipped with a notice.
+async function uploadFilesToCategory(fileList, categoryId) {
+  const files = Array.from(fileList || []);
+  const pdfs = files.filter(
+    (f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name || "")
+  );
+  const skipped = files.length - pdfs.length;
+  if (skipped > 0) {
+    window.alert(`${skipped} non-PDF file${skipped > 1 ? "s were" : " was"} ignored. Only PDFs can be added as papers.`);
+  }
+  for (const f of pdfs) {
+    await uploadPdf(f, categoryId);
   }
 }
 
@@ -4592,6 +4913,15 @@ function wireEvents() {
   if (els.wsAddPdfBtn) els.wsAddPdfBtn.addEventListener("click", () => els.docUploadInput.click());
   if (els.wsAddCategoryBtn)
     els.wsAddCategoryBtn.addEventListener("click", () => createCategory().catch(console.error));
+  if (els.wsSettingsFold) {
+    // Restore the collapsed/expanded state (collapsed by default) and persist changes.
+    els.wsSettingsFold.open = localStorage.getItem("wsSettingsOpen") === "1";
+    els.wsSettingsFold.addEventListener("toggle", () => {
+      try {
+        localStorage.setItem("wsSettingsOpen", els.wsSettingsFold.open ? "1" : "0");
+      } catch {}
+    });
+  }
 
   if (els.wsSettingsForm) {
     els.wsSettingsForm.addEventListener("submit", (e) => {

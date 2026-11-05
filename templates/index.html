@@ -93,10 +93,13 @@
           </div>
           <h2 class="section-label">PDFs</h2>
           <div id="wsBoard" class="ws-board"></div>
-          <h2 class="section-label">Shared files</h2>
+          <h2 class="section-label">Timeline</h2>
+          <div id="wsGantt" class="ws-gantt"></div>
+          <h2 id="wsFilesLabel" class="section-label">Shared files</h2>
           <div id="wsFileList" class="ws-file-list"></div>
 
-          <h2 class="section-label">Model &amp; API settings</h2>
+          <details id="wsSettingsFold" class="ws-settings-fold">
+          <summary class="section-label ws-settings-summary">Model &amp; API settings</summary>
           <p class="ws-settings-hint">
             Connect this workspace to your own Claude-compatible endpoint. Leave a field blank to
             use the server default. Works with the official Anthropic API, a custom gateway, or any
@@ -133,6 +136,7 @@
               <button id="wsSettingsSave" class="ws-btn primary" type="submit">Save settings</button>
             </div>
           </form>
+          </details>
         </section>
 
       <main class="main-layout panes-layout">
