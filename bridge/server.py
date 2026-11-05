@@ -34,6 +34,20 @@ PORT = int(os.environ.get("READPAPER_BRIDGE_PORT", "8765"))
 # Per-tool_result output kept small; the app trims the whole event list again for storage.
 MAX_TOOL_OUTPUT = 8000
 WORK_DIR = Path(os.environ.get("READPAPER_BRIDGE_WORKDIR", str(Path.home() / ".readpaper-bridge" / "work")))
+# Optional pre-built venv: if it exists its bin/ is prepended to PATH so claude's bash tool
+# can import packages without having to `pip install` them on each run.
+VENV_DIR = Path(os.environ.get("READPAPER_BRIDGE_VENV", str(WORK_DIR.parent / "venv")))
+
+
+def _bridge_env() -> Dict[str, str]:
+    """Return an env for the claude subprocess, injecting the pre-built venv when present."""
+    env = os.environ.copy()
+    venv_bin = VENV_DIR / "bin"
+    if venv_bin.is_dir():
+        env["VIRTUAL_ENV"] = str(VENV_DIR)
+        env["PATH"] = str(venv_bin) + os.pathsep + env.get("PATH", "")
+        env.pop("PYTHONHOME", None)
+    return env
 
 
 def find_claude() -> Optional[str]:
@@ -293,6 +307,7 @@ class Handler(BaseHTTPRequestHandler):
             proc = subprocess.Popen(
                 cmd,
                 cwd=cwd,
+                env=_bridge_env(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
