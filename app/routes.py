@@ -27,8 +27,11 @@ from .db import (
     create_document,
     create_highlight,
     create_node,
+    create_study_session,
     create_workspace,
     create_workspace_category,
+    beat_study_session,
+    stop_study_session,
     db_connection,
     delete_category,
     delete_document,
@@ -767,6 +770,44 @@ def api_delete_highlight(request: Request, highlight_id: str) -> Dict[str, Any]:
     if not delete_highlight(highlight_id):
         raise HTTPException(status_code=404, detail="Highlight does not exist")
     return {"deleted": True}
+
+
+# ── time tracking (study sessions) ─────────────────────────────────────────
+# A session is one contiguous counted interval for a document. The client owns a monotonic
+# "active seconds" counter (ticking only while visible + focused + not idle, and paused while a
+# Pomodoro work phase runs) and reports its cumulative value; the server stores the max it sees.
+
+
+@router.post("/api/documents/{document_id}/sessions")
+async def api_start_session(document_id: str, request: Request) -> JSONResponse:
+    _require_auth(request)
+    payload = await _json_body(request)
+    kind = str(payload.get("kind") or "passive")
+    try:
+        session = create_study_session(document_id, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({"session": session}, status_code=201)
+
+
+@router.post("/api/sessions/{session_id}/beat")
+async def api_beat_session(session_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
+    payload = await _json_body(request)
+    session = beat_study_session(session_id, payload.get("active_seconds", 0))
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session does not exist")
+    return {"session": session}
+
+
+@router.post("/api/sessions/{session_id}/stop")
+async def api_stop_session(session_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
+    payload = await _json_body(request)
+    session = stop_study_session(session_id, payload.get("active_seconds", 0))
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session does not exist")
+    return {"session": session}
 
 
 # ── workspace scratch dir (files the AI read/wrote under WORK_DIR; shown in the side tab) ──

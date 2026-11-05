@@ -80,6 +80,10 @@ _NODE_COLS = [
 ]
 _NOTE_COLS = ["id", "kind", "target_id", "rel_path", "created_at", "updated_at"]
 _NWF_COLS = ["node_id", "rel_path", "path", "size", "mtime", "created_at"]
+_SESSION_COLS = [
+    "id", "document_id", "workspace_id", "kind", "seconds",
+    "started_at", "ended_at", "created_at", "updated_at",
+]
 
 
 class ImportError_(ValueError):
@@ -198,6 +202,13 @@ def export_workspace(workspace_id: str) -> Path:
                 ).fetchall()
             ]
 
+        study_sessions = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM study_sessions WHERE workspace_id = ?", (workspace_id,)
+            ).fetchall()
+        ]
+
     data = {
         "format_version": FORMAT_VERSION,
         "workspace": workspace,
@@ -208,6 +219,7 @@ def export_workspace(workspace_id: str) -> Path:
         "nodes": nodes,
         "notes": notes,
         "node_workspace_files": node_workspace_files,
+        "study_sessions": study_sessions,
     }
     manifest = {
         "format_version": FORMAT_VERSION,
@@ -221,6 +233,7 @@ def export_workspace(workspace_id: str) -> Path:
             "nodes": len(nodes),
             "notes": len(notes),
             "scratch_files": len(node_workspace_files),
+            "study_sessions": len(study_sessions),
         },
     }
 
@@ -355,6 +368,7 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
         nodes = _rows("nodes")
         notes = _rows("notes")
         nwfs = _rows("node_workspace_files")
+        study_sessions = _rows("study_sessions")
 
         # Pre-generate every new id so the node<->highlight cycle resolves cleanly.
         new_ws_id = uuid.uuid4().hex
@@ -509,6 +523,16 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
             _insert(conn, "node_workspace_files", _NWF_COLS, _filtered(r, _NWF_COLS, {
                 "node_id": new_node,
                 "path": r.get("rel_path"),  # keep portable (rel to WORK_DIR)
+            }))
+
+        for s in study_sessions:
+            new_doc = _map(doc_map, s.get("document_id"))
+            if not new_doc:
+                continue  # session for a document that didn't import; skip
+            _insert(conn, "study_sessions", _SESSION_COLS, _filtered(s, _SESSION_COLS, {
+                "id": uuid.uuid4().hex,
+                "document_id": new_doc,
+                "workspace_id": new_ws_id,
             }))
 
     workspace = get_workspace(new_ws_id)

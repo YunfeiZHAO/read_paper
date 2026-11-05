@@ -304,6 +304,19 @@ pre {
   color: #9a5d12;
 }
 
+.local-model-select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+  cursor: pointer;
+  max-width: 160px;
+}
+
 .bridge-modal-body p { margin: 0 0 10px; }
 .bridge-modal-body pre {
   margin: 0 0 10px;
@@ -3507,3 +3520,148 @@ button.gantt-label:hover { color: var(--accent); }
 /* Category titles are double-click-to-rename (in addition to the ✎ button) */
 .renamable { cursor: text; }
 .renamable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+
+/* ── Pomodoro widget (reader only; fixed bottom-right) ───────────────────── */
+.pomodoro {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  font-size: 13px;
+  color: var(--text);
+}
+.pomodoro[hidden] { display: none; }
+
+/* Per-phase accent, used for the dot, time, and primary button. */
+.pomodoro { --pomo: var(--accent); }
+.pomodoro[data-phase="short"] { --pomo: var(--green); }
+.pomodoro[data-phase="long"] { --pomo: var(--accent-2); }
+
+/* Collapsed pill */
+.pomo-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.pomo-pill:hover { border-color: var(--line-strong); }
+.pomo-pill-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--pomo);
+}
+.pomodoro.running .pomo-pill-dot { animation: pomo-pulse 1.6s ease-in-out infinite; }
+@keyframes pomo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Expanded card */
+.pomodoro.open {
+  width: 232px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.pomo-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.pomo-phase {
+  flex: 1;
+  font-weight: 600;
+  color: var(--pomo);
+  letter-spacing: 0.02em;
+}
+.pomo-icon {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.pomo-icon:hover { background: var(--bg); color: var(--text); }
+.pomo-time {
+  font-size: 44px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  margin: 2px 0 8px;
+}
+.pomo-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.pomo-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+}
+.pomo-dot.on { background: var(--pomo); border-color: var(--pomo); }
+.pomo-controls {
+  display: flex;
+  gap: 6px;
+}
+.pomo-btn {
+  flex: 1;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.pomo-btn:hover { border-color: var(--line-strong); }
+.pomo-btn.primary {
+  background: var(--pomo);
+  border-color: var(--pomo);
+  color: #fff;
+}
+.pomo-btn.primary:hover { filter: brightness(1.06); }
+.pomo-settings {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pomo-settings label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pomo-settings input[type="number"] {
+  width: 52px;
+  margin-left: auto;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+.pomo-settings .pomo-check { justify-content: flex-start; gap: 7px; }
+.pomo-settings .pomo-check input { margin: 0; }

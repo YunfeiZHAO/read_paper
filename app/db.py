@@ -229,12 +229,35 @@ def init_db() -> None:
                 UNIQUE(kind, target_id)
             );
 
+            -- Time tracking. One row per contiguous *counted* study interval: a passive
+            -- reading span, or a Pomodoro work phase. Breaks are never persisted here, and
+            -- idle/blurred time is excluded by the client (it only reports active seconds).
+            -- `seconds` is authoritative (accumulated from heartbeats), NOT ended_at-started_at,
+            -- because wall-clock span includes idle/paused time that must not count.
+            -- workspace_id is denormalized from the document at creation so workspace totals
+            -- are a plain SUM with no join.
+            CREATE TABLE IF NOT EXISTS study_sessions (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'passive',  -- 'passive' | 'pomodoro'
+                seconds INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(document_id) REFERENCES documents(id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id);
             CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
             CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at);
             CREATE INDEX IF NOT EXISTS idx_node_workspace_files_node_id ON node_workspace_files(node_id);
             CREATE INDEX IF NOT EXISTS idx_highlights_document_id ON highlights(document_id);
             CREATE INDEX IF NOT EXISTS idx_notes_target ON notes(kind, target_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_document ON study_sessions(document_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON study_sessions(workspace_id);
             CREATE INDEX IF NOT EXISTS idx_workspaces_archived ON workspaces(archived);
             -- Indexes on documents/files workspace_id are created further below, AFTER the
             -- ALTER migration that guarantees the column exists on old databases.
@@ -680,7 +703,9 @@ def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
                      WHERE d.workspace_id = w.id AND d.archived = 0) AS document_count,
                    (SELECT MIN(d.deadline) FROM documents d
                      WHERE d.workspace_id = w.id AND d.archived = 0
-                       AND d.studied_at IS NULL AND d.deadline IS NOT NULL) AS urgent_deadline
+                       AND d.studied_at IS NULL AND d.deadline IS NOT NULL) AS urgent_deadline,
+                   (SELECT COALESCE(SUM(s.seconds), 0) FROM study_sessions s
+                     WHERE s.workspace_id = w.id) AS seconds_total
             FROM workspaces w
             {where}
             ORDER BY w.position ASC, COALESCE(w.last_opened_at, w.created_at) DESC
@@ -718,6 +743,7 @@ def list_workspaces(include_archived: bool = False) -> List[Dict[str, Any]]:
     for row in rows:
         ws = public_workspace(row)
         ws["document_count"] = int(ws.get("document_count") or 0)
+        ws["seconds_total"] = int(ws.get("seconds_total") or 0)
         ws["category_counts"] = counts_by_ws.get(ws["id"], [])
         out.append(ws)
     return out
@@ -881,6 +907,7 @@ def delete_workspace(workspace_id: str) -> Dict[str, Any]:
                 (doc_id,),
             )
             conn.execute("DELETE FROM nodes WHERE document_id = ?", (doc_id,))
+        conn.execute("DELETE FROM study_sessions WHERE workspace_id = ?", (workspace_id,))
         conn.execute(
             "DELETE FROM files WHERE workspace_id = ? OR id IN (SELECT file_id FROM documents WHERE workspace_id = ?)",
             (workspace_id, workspace_id),
@@ -909,6 +936,8 @@ def public_document(row: sqlite3.Row) -> Dict[str, Any]:
     doc = dict(row)
     doc["archived"] = bool(doc.get("archived"))
     doc["studied"] = bool(doc.get("studied_at"))
+    # Total counted study time (seconds); 0 when the row was selected without the subquery.
+    doc["seconds_total"] = int(doc.get("seconds_total") or 0)
     return doc
 
 
@@ -958,9 +987,15 @@ def create_document(
     return doc
 
 
-# Documents are always selected with their file's byte size joined in (as `size`),
-# so the UI can show a size and a download affordance per paper.
-_DOC_SELECT = "SELECT d.*, f.size AS size FROM documents d LEFT JOIN files f ON f.id = d.file_id"
+# Documents are always selected with their file's byte size joined in (as `size`) and their
+# total counted study time (as `seconds_total`), so the UI can show a size, a download
+# affordance, and a time-on-paper badge per paper.
+_DOC_SELECT = (
+    "SELECT d.*, f.size AS size, "
+    "(SELECT COALESCE(SUM(s.seconds), 0) FROM study_sessions s WHERE s.document_id = d.id) "
+    "AS seconds_total "
+    "FROM documents d LEFT JOIN files f ON f.id = d.file_id"
+)
 
 
 def get_document(document_id: str) -> Optional[Dict[str, Any]]:
@@ -1207,6 +1242,7 @@ def delete_document(document_id: str) -> Dict[str, Any]:
             "SELECT COUNT(*) AS c FROM nodes WHERE document_id = ?", (document_id,)
         ).fetchone()["c"]
         conn.execute("DELETE FROM nodes WHERE document_id = ?", (document_id,))
+        conn.execute("DELETE FROM study_sessions WHERE document_id = ?", (document_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
         # Remove the backing PDF file too, unless some other document still points at it.
         file_id = doc["file_id"] if doc else None
@@ -1227,6 +1263,90 @@ def delete_document(document_id: str) -> Dict[str, Any]:
     for rel in note_paths:
         unlink_note_file(rel)
     return {"deleted_nodes": int(node_count)}
+
+
+# ── study sessions (time tracking) ─────────────────────────────────────────
+
+_SESSION_KINDS = ("passive", "pomodoro")
+
+
+def public_session(row: sqlite3.Row) -> Dict[str, Any]:
+    s = dict(row)
+    s["seconds"] = int(s.get("seconds") or 0)
+    return s
+
+
+def create_study_session(document_id: str, kind: str = "passive") -> Dict[str, Any]:
+    """Open a new counted study interval for a document.
+
+    The session's ``workspace_id`` is copied from the document so workspace totals need no
+    join. ``seconds`` starts at 0 and is bumped by :func:`beat_study_session`. Raises
+    ``ValueError`` if the document is gone or ``kind`` is not a known kind.
+    """
+    if kind not in _SESSION_KINDS:
+        raise ValueError(f"Unknown session kind: {kind!r}")
+    session_id = uuid.uuid4().hex
+    created_at = now_iso()
+    with DB_LOCK, db_connection() as conn:
+        doc = conn.execute(
+            "SELECT workspace_id FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        if not doc:
+            raise ValueError("Document does not exist")
+        workspace_id = doc["workspace_id"] or ""
+        conn.execute(
+            """
+            INSERT INTO study_sessions
+                (id, document_id, workspace_id, kind, seconds, started_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (session_id, document_id, workspace_id, kind, created_at, created_at, created_at),
+        )
+        row = conn.execute(
+            "SELECT * FROM study_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+    return public_session(row)
+
+
+def _accrue_session(session_id: str, active_seconds: int, close: bool) -> Optional[Dict[str, Any]]:
+    """Set ``seconds = MAX(seconds, active_seconds)`` (robust to dropped/out-of-order beats),
+    optionally closing the session. Returns the updated public row, or None if it's gone."""
+    try:
+        active = max(0, int(active_seconds))
+    except (TypeError, ValueError):
+        active = 0
+    now = now_iso()
+    with DB_LOCK, db_connection() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM study_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if not exists:
+            return None
+        if close:
+            conn.execute(
+                "UPDATE study_sessions SET seconds = MAX(seconds, ?), ended_at = ?, "
+                "updated_at = ? WHERE id = ?",
+                (active, now, now, session_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE study_sessions SET seconds = MAX(seconds, ?), updated_at = ? WHERE id = ?",
+                (active, now, session_id),
+            )
+        row = conn.execute(
+            "SELECT * FROM study_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+    return public_session(row) if row else None
+
+
+def beat_study_session(session_id: str, active_seconds: int) -> Optional[Dict[str, Any]]:
+    """Heartbeat: record the client's cumulative active-seconds for an open session."""
+    return _accrue_session(session_id, active_seconds, close=False)
+
+
+def stop_study_session(session_id: str, active_seconds: int) -> Optional[Dict[str, Any]]:
+    """Close a session, recording its final cumulative active-seconds."""
+    return _accrue_session(session_id, active_seconds, close=True)
 
 
 def nodes_for_document(document_id: str) -> List[Dict[str, Any]]:

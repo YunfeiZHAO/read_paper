@@ -72,6 +72,7 @@ const state = {
     ? localStorage.getItem("askBackend")
     : "claude",
   enableWebSearch: localStorage.getItem("askWebSearch") === "on",
+  localModel: localStorage.getItem("localModel") || "",
   // Local Claude Code bridge: null = unknown/not yet checked, true/false = last health result.
   bridgeConnected: null,
   layout: new Map(),
@@ -167,6 +168,7 @@ const els = {
   answerDownloadBtn: document.getElementById("answerDownloadBtn"),
   answerCloseBtn: document.getElementById("answerCloseBtn"),
   bridgeStatusBtn: document.getElementById("bridgeStatusBtn"),
+  localModelSelect: document.getElementById("localModelSelect"),
   bridgeModal: document.getElementById("bridgeModal"),
   bridgeRetryBtn: document.getElementById("bridgeRetryBtn"),
   bridgeCloseBtn: document.getElementById("bridgeCloseBtn"),
@@ -248,6 +250,19 @@ function formatBytes(size) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Human-readable study time for card badges. Returns "" for 0 (caller hides the badge),
+// "<1m" for a sub-minute total, "45m" under an hour, else "1h 20m" (minutes dropped when 0).
+function formatDuration(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (s === 0) return "";
+  if (s < 60) return "<1m";
+  const mins = Math.floor(s / 60);
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
 }
 
 function formatTokens(value) {
@@ -570,6 +585,10 @@ async function applyRoute() {
   state.view = route.view;
   applyView();
 
+  // Leaving the reader (to home or a workspace) closes any open study session. Switching
+  // between documents inside the reader is handled by selectDocument → timeTrackStart.
+  if (route.view !== "reader") ttStop().catch(console.error);
+
   if (route.view === "home") {
     await fetchWorkspaces();
     renderHome();
@@ -588,6 +607,7 @@ async function applyRoute() {
       return navigate("workspace", { wsId: route.wsId });
     }
     await selectDocument(route.docId, { keepNode: false });
+    pomoSyncTracker(); // if a Pomodoro work phase is running, attribute time as pomodoro
   }
   renderBreadcrumb();
   try {
@@ -605,6 +625,7 @@ function setCurrentWorkspace(wsId) {
 function applyView() {
   if (els.appContent) els.appContent.className = "app-content view-" + state.view;
   document.body.classList.toggle("hide-reader-controls", state.view !== "reader");
+  renderPomodoro(); // the widget only shows in the reader
 }
 
 function refreshCurrentScreen() {
@@ -688,7 +709,11 @@ function buildWorkspaceCard(ws) {
   const meta = document.createElement("div");
   meta.className = "ws-card-meta";
   const when = (ws.last_opened_at || "").slice(0, 10);
-  meta.textContent = `${ws.document_count || 0} PDF` + (when ? `  ·  ${when}` : "");
+  const studied = formatDuration(ws.seconds_total);
+  meta.textContent =
+    `${ws.document_count || 0} PDF` +
+    (studied ? `  ·  ⏱ ${studied}` : "") +
+    (when ? `  ·  ${when}` : "");
   body.append(title, meta);
 
   // Urgency chip: the soonest unstudied deadline across the workspace's papers.
@@ -1282,6 +1307,8 @@ function buildDocCard(doc) {
   m.className = "doc-card-meta";
   const metaParts = [doc.num_pages ? `${doc.num_pages} pages` : "PDF"];
   if (doc.size) metaParts.push(formatBytes(doc.size));
+  const docStudied = formatDuration(doc.seconds_total);
+  if (docStudied) metaParts.push(`⏱ ${docStudied}`);
   m.textContent = metaParts.join("  ·  ");
   body.append(t, m);
 
@@ -1876,6 +1903,8 @@ async function selectDocument(docId, { keepNode = false } = {}) {
   state.currentDocId = docId || null;
   if (docId) localStorage.setItem("currentDocId", docId);
   else localStorage.removeItem("currentDocId");
+  // Begin/continue time tracking for whichever document is now open (fire-and-forget).
+  timeTrackStart(docId).catch(console.error);
   if (!keepNode) {
     state.selectedId = null;
     state.parentId = null;
@@ -3439,6 +3468,10 @@ function renderBridgeStatus() {
   if (!btn) return;
   const isLocal = state.selectedBackend === "local";
   btn.hidden = !isLocal;
+  if (els.localModelSelect) {
+    els.localModelSelect.hidden = !isLocal;
+    if (isLocal) els.localModelSelect.value = state.localModel;
+  }
   if (!isLocal) return;
   const connected = state.bridgeConnected === true;
   btn.textContent = connected ? "本地 Claude · 已连接" : "本地 Claude · 未连接";
@@ -3483,13 +3516,15 @@ async function flushBridgeEvents(nodeId, events, status, error) {
 }
 
 // Drive one local-backend answer: stream from the bridge, flush events to the server, finalize.
-async function runViaBridge(nodeId, prompt) {
+async function runViaBridge(nodeId, prompt, model) {
   let resp;
   try {
+    const body = { prompt };
+    if (model) body.model = model;
     resp = await fetch(`${BRIDGE_URL}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify(body),
     });
   } catch {
     state.bridgeConnected = false;
@@ -3589,7 +3624,7 @@ async function sendPrompt(event) {
       // Browser-driven: the server returned the built prompt but ran no worker. Drive the local
       // Claude Code bridge in the background; it writes results back onto the node. The composer
       // frees up immediately and the 2.5s poll surfaces live progress.
-      runViaBridge(data.node.id, data.prompt).catch((err) => console.error(err));
+      runViaBridge(data.node.id, data.prompt, state.localModel || null).catch((err) => console.error(err));
     }
   } catch (err) {
     window.alert(err.message);
@@ -4868,6 +4903,12 @@ function wireEvents() {
     });
   }
   if (els.bridgeCloseBtn) els.bridgeCloseBtn.addEventListener("click", closeBridgeModal);
+  if (els.localModelSelect) {
+    els.localModelSelect.addEventListener("change", () => {
+      state.localModel = els.localModelSelect.value;
+      localStorage.setItem("localModel", state.localModel);
+    });
+  }
   if (els.bridgeModal) {
     els.bridgeModal.addEventListener("click", (e) => {
       if (e.target && e.target.hasAttribute && e.target.hasAttribute("data-bridge-close")) closeBridgeModal();
@@ -5321,7 +5362,506 @@ async function handleLogout() {
   }
 }
 
+// ── Time tracking: passive reading + Pomodoro focus intervals ──────────────
+// A "session" is one contiguous counted interval for the current document. The client owns a
+// monotonic activeSeconds counter that advances only while the reader is genuinely in use
+// (tab visible + window focused + recent input, and not idle); it is flushed to the server,
+// which stores the max it sees (robust to dropped/stale beats). Idle grace is trimmed so
+// staring-away time doesn't stick. Pomodoro work (phase 4) flips `mode` to relax the
+// input requirement during a focus sprint and tags the interval as kind "pomodoro".
+
+const TT_IDLE_MS = 120000; // no input for this long while focused → stop counting (idle)
+const TT_BEAT_MS = 20000; // how often to flush activeSeconds to the server
+const TT_IDLE_SECONDS = Math.round(TT_IDLE_MS / 1000);
+
+const tt = {
+  docId: null,
+  sessionId: null,
+  kind: "passive",
+  mode: "passive", // "passive" | "pomodoro"
+  activeSeconds: 0,
+  lastBeatSeconds: 0,
+  lastInputAt: Date.now(),
+  wasLive: false,
+  starting: false,
+  tickTimer: null,
+  beatTimer: null,
+};
+
+function ttMarkInput() {
+  tt.lastInputAt = Date.now();
+}
+
+// Is the reader genuinely in use right now? Passive mode needs recent input; a Pomodoro work
+// sprint counts through quiet reading but still pauses when you leave the tab.
+function ttIsLive() {
+  if (!tt.sessionId) return false;
+  if (document.visibilityState !== "visible") return false;
+  if (!document.hasFocus()) return false;
+  if (tt.mode === "pomodoro") return true;
+  return Date.now() - tt.lastInputAt < TT_IDLE_MS;
+}
+
+function ttTick() {
+  const live = ttIsLive();
+  if (live) {
+    tt.activeSeconds += 1;
+  } else if (tt.wasLive && tt.mode === "passive") {
+    // Live→idle transition. If it was the idle timeout (still visible + focused, just no
+    // input), trim the grace window we counted since the last input so it doesn't count.
+    if (document.visibilityState === "visible" && document.hasFocus()) {
+      const grace = Math.min(TT_IDLE_SECONDS, Math.round((Date.now() - tt.lastInputAt) / 1000));
+      tt.activeSeconds = Math.max(0, tt.activeSeconds - grace);
+    }
+  }
+  tt.wasLive = live;
+}
+
+function ttClearTimers() {
+  if (tt.tickTimer) clearInterval(tt.tickTimer);
+  if (tt.beatTimer) clearInterval(tt.beatTimer);
+  tt.tickTimer = null;
+  tt.beatTimer = null;
+}
+
+function ttStartTimers() {
+  ttClearTimers();
+  tt.tickTimer = setInterval(ttTick, 1000);
+  tt.beatTimer = setInterval(ttBeat, TT_BEAT_MS);
+}
+
+async function ttBeat() {
+  if (!tt.sessionId || tt.activeSeconds === tt.lastBeatSeconds) return;
+  const secs = tt.activeSeconds;
+  try {
+    await fetch(`/api/sessions/${tt.sessionId}/beat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active_seconds: secs }),
+    });
+    tt.lastBeatSeconds = secs;
+  } catch {}
+}
+
+async function ttOpenSession(docId, kind) {
+  tt.starting = true;
+  try {
+    const res = await fetch(`/api/documents/${docId}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind }),
+    });
+    if (!res.ok) throw new Error(`start ${res.status}`);
+    const data = await res.json();
+    tt.sessionId = data.session.id;
+    tt.docId = docId;
+    tt.kind = kind;
+    tt.activeSeconds = 0;
+    tt.lastBeatSeconds = 0;
+    tt.lastInputAt = Date.now();
+    tt.wasLive = false;
+  } catch (err) {
+    console.error("time: open session", err);
+    tt.sessionId = null;
+  } finally {
+    tt.starting = false;
+  }
+}
+
+// Close the open session (async flush). Safe to call when nothing is open.
+async function ttStop() {
+  ttClearTimers();
+  const sid = tt.sessionId;
+  const secs = tt.activeSeconds;
+  tt.sessionId = null;
+  tt.docId = null;
+  tt.mode = "passive";
+  if (!sid) return;
+  try {
+    await fetch(`/api/sessions/${sid}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active_seconds: secs }),
+    });
+  } catch {}
+}
+
+// Begin (or switch to) passive tracking for a document. Called whenever a doc becomes active.
+async function timeTrackStart(docId) {
+  if (!docId) return;
+  if (tt.docId === docId && tt.sessionId) return; // already tracking this doc
+  await ttStop();
+  tt.mode = "passive";
+  await ttOpenSession(docId, "passive");
+  if (tt.sessionId) ttStartTimers();
+}
+
+// Reopen the current document's session under a different kind ("passive" ↔ "pomodoro"),
+// preserving which document is tracked. Used by the Pomodoro widget at phase transitions.
+async function ttSwitchKind(kind) {
+  const docId = tt.docId || state.currentDocId;
+  if (!docId) return;
+  const desiredMode = kind === "pomodoro" ? "pomodoro" : "passive";
+  if (tt.sessionId && tt.docId === docId && tt.mode === desiredMode) return; // already right
+  await ttStop();
+  tt.mode = desiredMode;
+  await ttOpenSession(docId, kind);
+  if (tt.sessionId) ttStartTimers();
+}
+
+// Final flush on tab close / reload — fetch won't survive unload, so use sendBeacon.
+function ttFlushOnUnload() {
+  if (!tt.sessionId) return;
+  try {
+    const blob = new Blob([JSON.stringify({ active_seconds: tt.activeSeconds })], {
+      type: "application/json",
+    });
+    navigator.sendBeacon(`/api/sessions/${tt.sessionId}/stop`, blob);
+    tt.sessionId = null;
+  } catch {}
+}
+
+let ttInitialized = false;
+function ttInit() {
+  if (ttInitialized) return;
+  ttInitialized = true;
+  // Any of these count as "still reading" and refresh the idle clock.
+  for (const ev of ["pointerdown", "pointermove", "keydown", "wheel", "scroll"]) {
+    window.addEventListener(ev, ttMarkInput, { passive: true, capture: true });
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") ttMarkInput();
+    else ttBeat(); // flush the latest before the tab goes background
+  });
+  window.addEventListener("focus", ttMarkInput);
+  window.addEventListener("blur", ttBeat);
+  window.addEventListener("pagehide", ttFlushOnUnload);
+}
+
+// ── Pomodoro (classic, configurable) ───────────────────────────────────────
+// A focus timer that cycles work → short break → (every `interval` pomodoros) long break.
+// Durations and auto-start/sound are user config in localStorage. The countdown is driven by
+// an absolute end timestamp (not a tick count) so it stays correct in a throttled background
+// tab. Running a WORK phase in the reader attributes time to the current paper as kind
+// "pomodoro" (via ttSwitchKind); breaks are not counted; stopping resumes passive reading.
+
+const POMO_DEFAULTS = {
+  work: 25,
+  short: 5,
+  long: 15,
+  interval: 4, // long break after this many work pomodoros
+  autoStartBreaks: true,
+  autoStartWork: false,
+  sound: true,
+};
+
+function loadPomoConfig() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("pomodoroConfig") || "{}");
+    const cfg = { ...POMO_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+    for (const k of ["work", "short", "long", "interval"]) {
+      cfg[k] = Math.max(1, Math.min(180, Math.round(Number(cfg[k]) || POMO_DEFAULTS[k])));
+    }
+    cfg.autoStartBreaks = !!cfg.autoStartBreaks;
+    cfg.autoStartWork = !!cfg.autoStartWork;
+    cfg.sound = !!cfg.sound;
+    return cfg;
+  } catch {
+    return { ...POMO_DEFAULTS };
+  }
+}
+
+function savePomoConfig() {
+  try {
+    localStorage.setItem("pomodoroConfig", JSON.stringify(pomo.config));
+  } catch {}
+}
+
+const POMO_LABELS = { work: "Focus", short: "Short break", long: "Long break" };
+
+const pomo = {
+  config: loadPomoConfig(),
+  phase: "work", // "work" | "short" | "long"
+  running: false,
+  remaining: 0, // seconds left in the current phase
+  endsAt: 0, // epoch ms the phase ends at (while running)
+  completed: 0, // work pomodoros finished in this cycle
+  open: localStorage.getItem("pomodoroOpen") === "1",
+  settingsOpen: false,
+  timer: null,
+  el: null,
+};
+
+function pomoPhaseSeconds(phase) {
+  return pomo.config[phase === "work" ? "work" : phase] * 60;
+}
+
+function pomoFmt(secs) {
+  const s = Math.max(0, Math.round(secs));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+}
+
+// Keep the time tracker in step with the current Pomodoro state.
+function pomoSyncTracker() {
+  if (state.view !== "reader" || !state.currentDocId) return;
+  if (pomo.running && pomo.phase === "work") {
+    ttSwitchKind("pomodoro").catch(console.error);
+  } else if (pomo.running) {
+    ttStop().catch(console.error); // a break is running — don't count it
+  } else {
+    timeTrackStart(state.currentDocId).catch(console.error); // idle → passive reading
+  }
+}
+
+function pomoStart() {
+  if (pomo.running) return;
+  if (pomo.remaining <= 0) pomo.remaining = pomoPhaseSeconds(pomo.phase);
+  pomo.running = true;
+  pomo.endsAt = Date.now() + pomo.remaining * 1000;
+  pomoRunTimer();
+  pomoSyncTracker();
+  renderPomodoro();
+}
+
+function pomoPause() {
+  if (!pomo.running) return;
+  pomo.remaining = Math.max(0, Math.round((pomo.endsAt - Date.now()) / 1000));
+  pomo.running = false;
+  pomoStopTimer();
+  pomoSyncTracker();
+  renderPomodoro();
+}
+
+function pomoReset() {
+  pomo.running = false;
+  pomo.phase = "work";
+  pomo.completed = 0;
+  pomo.remaining = pomoPhaseSeconds("work");
+  pomoStopTimer();
+  pomoSyncTracker();
+  renderPomodoro();
+}
+
+// Advance to the next phase without finishing the current one (user "skip").
+function pomoSkip() {
+  pomoAdvance(false);
+}
+
+function pomoAdvance(completedNaturally) {
+  const wasWork = pomo.phase === "work";
+  if (wasWork && completedNaturally) pomo.completed += 1;
+  if (wasWork) {
+    const dueLong = pomo.completed > 0 && pomo.completed % pomo.config.interval === 0;
+    pomo.phase = dueLong ? "long" : "short";
+  } else {
+    pomo.phase = "work";
+  }
+  pomo.remaining = pomoPhaseSeconds(pomo.phase);
+  const autoStart = pomo.phase === "work" ? pomo.config.autoStartWork : pomo.config.autoStartBreaks;
+  pomo.running = false;
+  pomoStopTimer();
+  if (autoStart) {
+    pomoStart();
+  } else {
+    pomoSyncTracker();
+    renderPomodoro();
+  }
+}
+
+function pomoRunTimer() {
+  pomoStopTimer();
+  pomo.timer = setInterval(() => {
+    pomo.remaining = Math.max(0, Math.round((pomo.endsAt - Date.now()) / 1000));
+    if (pomo.remaining <= 0) {
+      pomoPhaseComplete();
+    } else {
+      renderPomodoro();
+    }
+  }, 1000);
+}
+
+function pomoStopTimer() {
+  if (pomo.timer) clearInterval(pomo.timer);
+  pomo.timer = null;
+}
+
+function pomoPhaseComplete() {
+  pomoStopTimer();
+  const finished = pomo.phase;
+  pomoChime();
+  pomoNotify(finished);
+  pomoAdvance(true);
+}
+
+// A short two-tone chime via the Web Audio API (no asset needed). Silent if config.sound off.
+function pomoChime() {
+  if (!pomo.config.sound) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const notes = pomo.phase === "work" ? [660, 880] : [880, 660];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      const t = ctx.currentTime + i * 0.18;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.18);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 800);
+  } catch {}
+}
+
+function pomoNotify(finishedPhase) {
+  const next = pomo.phase;
+  const msg =
+    finishedPhase === "work"
+      ? `Focus done — time for a ${next === "long" ? "long" : "short"} break.`
+      : "Break over — back to focus.";
+  try {
+    if ("Notification" in window && Notification.permission === "granted") {
+      new Notification("Pomodoro", { body: msg });
+    }
+  } catch {}
+  // No desktop notification permission → the chime and the widget advancing to the next
+  // phase are the cue (a blocking alert would interrupt a focus session).
+}
+
+function pomoMaybeAskNotify() {
+  try {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  } catch {}
+}
+
+function pomoInit() {
+  if (pomo.el) return;
+  pomo.remaining = pomoPhaseSeconds("work");
+  const el = document.createElement("div");
+  el.className = "pomodoro";
+  el.hidden = true;
+  document.body.appendChild(el);
+  pomo.el = el;
+  el.addEventListener("click", (e) => {
+    const action = e.target.closest("[data-pomo]")?.dataset.pomo;
+    if (!action) return;
+    if (action === "toggle-open") {
+      pomo.open = !pomo.open;
+      try {
+        localStorage.setItem("pomodoroOpen", pomo.open ? "1" : "0");
+      } catch {}
+      if (pomo.open) pomoMaybeAskNotify();
+    } else if (action === "start") {
+      pomoMaybeAskNotify();
+      pomoStart();
+      return;
+    } else if (action === "pause") {
+      pomoPause();
+      return;
+    } else if (action === "skip") {
+      pomoSkip();
+      return;
+    } else if (action === "reset") {
+      pomoReset();
+      return;
+    } else if (action === "settings") {
+      pomo.settingsOpen = !pomo.settingsOpen;
+    }
+    renderPomodoro();
+  });
+  el.addEventListener("change", (e) => {
+    const field = e.target.dataset.pomoCfg;
+    if (!field) return;
+    if (e.target.type === "checkbox") {
+      pomo.config[field] = e.target.checked;
+    } else {
+      const v = Math.max(1, Math.min(180, Math.round(Number(e.target.value) || POMO_DEFAULTS[field])));
+      pomo.config[field] = v;
+      e.target.value = v;
+    }
+    savePomoConfig();
+    if (!pomo.running) {
+      pomo.remaining = pomoPhaseSeconds(pomo.phase); // reflect new duration immediately
+      renderPomodoro();
+    }
+  });
+  renderPomodoro();
+}
+
+function renderPomodoro() {
+  const el = pomo.el;
+  if (!el) return;
+  const show = state.view === "reader";
+  el.hidden = !show;
+  if (!show) return;
+
+  el.classList.toggle("open", pomo.open);
+  el.classList.toggle("running", pomo.running);
+  el.dataset.phase = pomo.phase;
+
+  const liveRemaining = pomo.running
+    ? Math.max(0, Math.round((pomo.endsAt - Date.now()) / 1000))
+    : pomo.remaining;
+  const label = POMO_LABELS[pomo.phase];
+  // Filled dots = pomodoros done in the current cycle. On a long break the whole set is done.
+  const inCycle = pomo.phase === "long" ? pomo.config.interval : pomo.completed % pomo.config.interval;
+  const dots = Array.from({ length: pomo.config.interval }, (_, i) =>
+    `<span class="pomo-dot${i < inCycle ? " on" : ""}"></span>`
+  ).join("");
+
+  if (!pomo.open) {
+    el.innerHTML = `
+      <button type="button" class="pomo-pill" data-pomo="toggle-open" title="Pomodoro">
+        <span class="pomo-pill-dot"></span>
+        <span class="pomo-pill-time">${pomoFmt(liveRemaining)}</span>
+      </button>`;
+    return;
+  }
+
+  const cfg = pomo.config;
+  const settings = pomo.settingsOpen
+    ? `
+      <div class="pomo-settings">
+        <label>Focus <input type="number" min="1" max="180" data-pomo-cfg="work" value="${cfg.work}"> min</label>
+        <label>Short break <input type="number" min="1" max="180" data-pomo-cfg="short" value="${cfg.short}"> min</label>
+        <label>Long break <input type="number" min="1" max="180" data-pomo-cfg="long" value="${cfg.long}"> min</label>
+        <label>Long break every <input type="number" min="1" max="12" data-pomo-cfg="interval" value="${cfg.interval}"> pomodoros</label>
+        <label class="pomo-check"><input type="checkbox" data-pomo-cfg="autoStartBreaks" ${cfg.autoStartBreaks ? "checked" : ""}> Auto-start breaks</label>
+        <label class="pomo-check"><input type="checkbox" data-pomo-cfg="autoStartWork" ${cfg.autoStartWork ? "checked" : ""}> Auto-start focus</label>
+        <label class="pomo-check"><input type="checkbox" data-pomo-cfg="sound" ${cfg.sound ? "checked" : ""}> Sound</label>
+      </div>`
+    : "";
+
+  el.innerHTML = `
+    <div class="pomo-head">
+      <span class="pomo-phase">${label}</span>
+      <button type="button" class="pomo-icon" data-pomo="settings" title="Settings">⚙</button>
+      <button type="button" class="pomo-icon" data-pomo="toggle-open" title="Collapse">▾</button>
+    </div>
+    <div class="pomo-time">${pomoFmt(liveRemaining)}</div>
+    <div class="pomo-dots">${dots}</div>
+    <div class="pomo-controls">
+      ${pomo.running
+        ? `<button type="button" class="pomo-btn primary" data-pomo="pause">Pause</button>`
+        : `<button type="button" class="pomo-btn primary" data-pomo="start">Start</button>`}
+      <button type="button" class="pomo-btn" data-pomo="skip" title="Skip to next phase">Skip</button>
+      <button type="button" class="pomo-btn" data-pomo="reset" title="Reset">Reset</button>
+    </div>
+    ${settings}`;
+}
+
 async function setupApp() {
+  ttInit();
+  pomoInit();
   try {
     // With no hash, restore the last location you were at; otherwise default to home.
     let delegatedToHashChange = false;
