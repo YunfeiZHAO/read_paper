@@ -444,16 +444,17 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
                 "path": new_file_rel.get(old_id, f.get("path")),
             }))
 
-        for c in categories:
+        for i, c in enumerate(categories):
             old_id = c.get("id")
             if not old_id:
                 continue
             _insert(conn, "categories", _CATEGORY_COLS, _filtered(c, _CATEGORY_COLS, {
                 "id": cat_map[old_id],
                 "workspace_id": new_ws_id,
+                "position": float(c["position"]) if c.get("position") is not None else float(i + 1),
             }))
 
-        for d in documents:
+        for i, d in enumerate(documents):
             old_id = d.get("id")
             if not old_id:
                 continue
@@ -462,6 +463,9 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
                 "workspace_id": new_ws_id,
                 "file_id": _map(file_map, d.get("file_id")),
                 "category_id": _map(cat_map, d.get("category_id")),
+                # Fallback for archives created before position/archived were in _DOCUMENT_COLS.
+                "position": float(d["position"]) if d.get("position") is not None else float(i + 1),
+                "archived": int(d.get("archived") or 0),
             }))
 
         for n in nodes:
