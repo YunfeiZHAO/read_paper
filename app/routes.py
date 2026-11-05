@@ -22,20 +22,24 @@ from .config import (
 from . import notes
 from .db import (
     DB_LOCK,
+    create_category,
     create_document,
     create_highlight,
     create_node,
     create_workspace,
     db_connection,
+    delete_category,
     delete_document,
     delete_highlight,
     delete_workspace,
+    get_category,
     get_document,
     get_file,
     get_highlight,
     get_node,
     get_workspace,
     link_highlight_to_node,
+    list_categories,
     list_documents,
     list_files_for_workspace,
     list_highlights,
@@ -43,9 +47,11 @@ from .db import (
     nodes_for_document,
     nodes_for_project,
     public_node,
+    set_document_placement,
     touch_document,
     touch_workspace,
     unlink_note_file,
+    update_category,
     update_document,
     update_highlight,
     update_node,
@@ -363,6 +369,7 @@ def api_get_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
     return {
         "workspace": ws,
         "documents": list_documents(workspace_id),
+        "categories": list_categories(workspace_id),
         "files": list_files_for_workspace(workspace_id),
     }
 
@@ -517,22 +524,82 @@ def api_get_document(request: Request, document_id: str) -> Dict[str, Any]:
 
 @router.patch("/api/documents/{document_id}")
 async def api_update_document(document_id: str, request: Request) -> Dict[str, Any]:
-    """Update a document's title and rename the file on disk."""
+    """Partial update of a document. A `title` key renames it (and the file on disk);
+    `category_id`/`position` keys move it between kanban columns (a drag) without
+    touching the file."""
     _require_auth(request)
     if not get_document(document_id):
         raise HTTPException(status_code=404, detail="Document does not exist")
-    
+
     body = await request.json()
-    title = (body.get("title") or "").strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="Title cannot be empty")
-    
-    try:
-        update_document(document_id, title)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
+
+    # Placement update (drag/reorder): applied when either key is present.
+    if "category_id" in body or "position" in body:
+        category_id = body.get("category_id")
+        category_id = str(category_id).strip() if category_id else None
+        if category_id:
+            cat = get_category(category_id)
+            if not cat:
+                raise HTTPException(status_code=400, detail="Category does not exist")
+        try:
+            position = float(body.get("position"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="position must be a number")
+        set_document_placement(document_id, category_id, position)
+
+    # Title update (rename): only when a title key is actually sent.
+    if "title" in body:
+        title = (body.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        try:
+            update_document(document_id, title)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     return {"document": get_document(document_id)}
+
+
+@router.post("/api/workspaces/{workspace_id}/categories")
+async def api_create_category(workspace_id: str, request: Request) -> JSONResponse:
+    _require_auth(request)
+    if not get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace does not exist")
+    payload = await _json_body(request)
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    cat = create_category(workspace_id, title)
+    return JSONResponse({"category": cat}, status_code=201)
+
+
+@router.patch("/api/categories/{category_id}")
+async def api_update_category(category_id: str, request: Request) -> Dict[str, Any]:
+    _require_auth(request)
+    if not get_category(category_id):
+        raise HTTPException(status_code=404, detail="Category does not exist")
+    payload = await _json_body(request)
+    title = None
+    if "title" in payload:
+        title = str(payload["title"] or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+    position = None
+    if "position" in payload:
+        try:
+            position = float(payload["position"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="position must be a number")
+    return {"category": update_category(category_id, title=title, position=position)}
+
+
+@router.delete("/api/categories/{category_id}")
+def api_delete_category(request: Request, category_id: str) -> Dict[str, Any]:
+    _require_auth(request)
+    if not get_category(category_id):
+        raise HTTPException(status_code=404, detail="Category does not exist")
+    result = delete_category(category_id)
+    return {**result}
 
 
 @router.delete("/api/documents/{document_id}")

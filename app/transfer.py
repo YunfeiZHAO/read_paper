@@ -57,7 +57,10 @@ _WORKSPACE_COLS = [
 ]
 _DOCUMENT_COLS = [
     "id", "workspace_id", "file_id", "title", "original_name", "num_pages",
-    "archived", "created_at", "updated_at", "last_opened_at",
+    "category_id", "position", "archived", "created_at", "updated_at", "last_opened_at",
+]
+_CATEGORY_COLS = [
+    "id", "workspace_id", "title", "position", "created_at", "updated_at",
 ]
 _FILE_COLS = [
     "id", "workspace_id", "original_name", "stored_name", "path", "mime",
@@ -128,6 +131,13 @@ def export_workspace(workspace_id: str) -> Path:
         documents = [dict(r) for r in doc_rows]
         doc_ids = [d["id"] for d in documents]
 
+        categories = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM categories WHERE workspace_id = ?", (workspace_id,)
+            ).fetchall()
+        ]
+
         # Mirror delete_workspace()'s file set: the drawer plus every document's PDF.
         file_rows = conn.execute(
             """
@@ -192,6 +202,7 @@ def export_workspace(workspace_id: str) -> Path:
         "format_version": FORMAT_VERSION,
         "workspace": workspace,
         "documents": documents,
+        "categories": categories,
         "files": files,
         "highlights": highlights,
         "nodes": nodes,
@@ -338,6 +349,7 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
 
         ws_src = data["workspace"]
         documents = _rows("documents")
+        categories = _rows("categories")
         files = _rows("files")
         highlights = _rows("highlights")
         nodes = _rows("nodes")
@@ -348,6 +360,7 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
         new_ws_id = uuid.uuid4().hex
         file_map = {f["id"]: uuid.uuid4().hex for f in files if f.get("id")}
         doc_map = {d["id"]: uuid.uuid4().hex for d in documents if d.get("id")}
+        cat_map = {c["id"]: uuid.uuid4().hex for c in categories if c.get("id")}
         node_map = {n["id"]: uuid.uuid4().hex for n in nodes if n.get("id")}
         hl_map = {h["id"]: uuid.uuid4().hex for h in highlights if h.get("id")}
 
@@ -417,6 +430,15 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
                 "path": new_file_rel.get(old_id, f.get("path")),
             }))
 
+        for c in categories:
+            old_id = c.get("id")
+            if not old_id:
+                continue
+            _insert(conn, "categories", _CATEGORY_COLS, _filtered(c, _CATEGORY_COLS, {
+                "id": cat_map[old_id],
+                "workspace_id": new_ws_id,
+            }))
+
         for d in documents:
             old_id = d.get("id")
             if not old_id:
@@ -425,6 +447,7 @@ def import_workspace(zip_path: Path) -> Dict[str, Any]:
                 "id": doc_map[old_id],
                 "workspace_id": new_ws_id,
                 "file_id": _map(file_map, d.get("file_id")),
+                "category_id": _map(cat_map, d.get("category_id")),
             }))
 
         for n in nodes:

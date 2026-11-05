@@ -39,7 +39,7 @@ const state = {
   view: "home", // "home" | "workspace" | "reader"
   workspaces: [],
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId") || null,
-  wsDetail: { documents: [], files: [] }, // workspace-detail page data
+  wsDetail: { documents: [], categories: [], files: [] }, // workspace-detail page data
   allFiles: [], // all files from /api/tree (state.files is the subset for the current workspace)
   // ── PDF / documents ──
   documents: [],
@@ -183,7 +183,8 @@ const els = {
   wsDesc: document.getElementById("wsDesc"),
   wsRenameBtn: document.getElementById("wsRenameBtn"),
   wsAddPdfBtn: document.getElementById("wsAddPdfBtn"),
-  wsDocGrid: document.getElementById("wsDocGrid"),
+  wsAddCategoryBtn: document.getElementById("wsAddCategoryBtn"),
+  wsBoard: document.getElementById("wsBoard"),
   wsFileList: document.getElementById("wsFileList"),
   wsSettingsForm: document.getElementById("wsSettingsForm"),
   wsApiBaseUrl: document.getElementById("wsApiBaseUrl"),
@@ -722,11 +723,12 @@ async function fetchWorkspaceDetail(wsId) {
     state.wsDetail = {
       workspace: data.workspace || null,
       documents: data.documents || [],
+      categories: data.categories || [],
       files: data.files || [],
     };
   } catch (err) {
     console.error(err);
-    state.wsDetail = { workspace: null, documents: [], files: [] };
+    state.wsDetail = { workspace: null, documents: [], categories: [], files: [] };
   }
 }
 
@@ -738,62 +740,7 @@ function renderWorkspaceDetail() {
     els.wsDesc.hidden = !(ws && ws.description);
   }
 
-  if (els.wsDocGrid) {
-    const docs = state.wsDetail.documents;
-    if (!docs.length) {
-      const empty = document.createElement("div");
-      empty.className = "screen-empty";
-      empty.textContent = "No PDFs yet. Click “+ PDF” to add one.";
-      els.wsDocGrid.replaceChildren(empty);
-    } else {
-      const cards = docs.map((doc) => {
-        const card = document.createElement("div");
-        card.className = "doc-card";
-        const body = document.createElement("button");
-        body.type = "button";
-        body.className = "doc-card-body";
-        body.addEventListener("click", () =>
-          navigate("reader", { wsId: state.currentWorkspaceId, docId: doc.id })
-        );
-
-        const t = document.createElement("div");
-        t.className = "doc-card-title";
-        t.textContent = doc.title || doc.original_name || "Untitled";
-        const m = document.createElement("div");
-        m.className = "doc-card-meta";
-        m.textContent = doc.num_pages ? `${doc.num_pages} pages` : "PDF";
-        body.append(t, m);
-        
-        const buttons = document.createElement("div");
-        buttons.className = "doc-card-buttons";
-        
-        const rename = document.createElement("button");
-        rename.type = "button";
-        rename.className = "doc-card-rename";
-        rename.title = "Rename PDF";
-        rename.textContent = "✎";
-        rename.addEventListener("click", (e) => {
-          e.stopPropagation();
-          renameDocument(doc).catch(console.error);
-        });
-        
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "doc-card-del";
-        del.title = "Delete PDF";
-        del.textContent = "⌫";
-        del.addEventListener("click", (e) => {
-          e.stopPropagation();
-          deleteDocument(doc).catch(console.error);
-        });
-        
-        buttons.append(rename, del);
-        card.append(body, buttons);
-        return card;
-      });
-      els.wsDocGrid.replaceChildren(...cards);
-    }
-  }
+  renderBoard();
 
   if (els.wsFileList) {
     const files = state.wsDetail.files;
@@ -821,6 +768,289 @@ function renderWorkspaceDetail() {
   }
 
   renderWorkspaceSettings(ws);
+}
+
+// ── Kanban board: categories as columns, PDF cards draggable between them ──
+
+const UNCATEGORIZED = "__uncat__"; // sentinel column id for documents with no category
+
+// Build one PDF card (draggable). Reused for every column.
+function buildDocCard(doc) {
+  const card = document.createElement("div");
+  card.className = "doc-card";
+  card.draggable = true;
+  card.dataset.docId = doc.id;
+
+  card.addEventListener("dragstart", (e) => {
+    state.dragDocId = doc.id;
+    card.classList.add("dragging");
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      try {
+        e.dataTransfer.setData("text/plain", doc.id);
+      } catch (_) {}
+    }
+  });
+  card.addEventListener("dragend", () => {
+    state.dragDocId = null;
+    card.classList.remove("dragging");
+    clearDropMarkers();
+  });
+
+  const body = document.createElement("button");
+  body.type = "button";
+  body.className = "doc-card-body";
+  body.addEventListener("click", () =>
+    navigate("reader", { wsId: state.currentWorkspaceId, docId: doc.id })
+  );
+
+  const t = document.createElement("div");
+  t.className = "doc-card-title";
+  t.textContent = doc.title || doc.original_name || "Untitled";
+  const m = document.createElement("div");
+  m.className = "doc-card-meta";
+  m.textContent = doc.num_pages ? `${doc.num_pages} pages` : "PDF";
+  body.append(t, m);
+
+  const buttons = document.createElement("div");
+  buttons.className = "doc-card-buttons";
+
+  const rename = document.createElement("button");
+  rename.type = "button";
+  rename.className = "doc-card-rename";
+  rename.title = "Rename PDF";
+  rename.textContent = "✎";
+  rename.addEventListener("click", (e) => {
+    e.stopPropagation();
+    renameDocument(doc).catch(console.error);
+  });
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "doc-card-del";
+  del.title = "Delete PDF";
+  del.textContent = "⌫";
+  del.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteDocument(doc).catch(console.error);
+  });
+
+  buttons.append(rename, del);
+  card.append(body, buttons);
+  return card;
+}
+
+function clearDropMarkers() {
+  if (!els.wsBoard) return;
+  els.wsBoard
+    .querySelectorAll(".ws-col.drag-over")
+    .forEach((el) => el.classList.remove("drag-over"));
+}
+
+function renderBoard() {
+  if (!els.wsBoard) return;
+  const docs = state.wsDetail.documents || [];
+  const cats = (state.wsDetail.categories || [])
+    .slice()
+    .sort((a, b) => (a.position || 0) - (b.position || 0));
+
+  // Group documents by category id (null → Uncategorized sentinel).
+  const byCat = new Map();
+  byCat.set(UNCATEGORIZED, []);
+  cats.forEach((c) => byCat.set(c.id, []));
+  docs.forEach((d) => {
+    const key = d.category_id && byCat.has(d.category_id) ? d.category_id : UNCATEGORIZED;
+    byCat.get(key).push(d);
+  });
+  // Documents already arrive ordered by position from the API; keep that order.
+
+  const columns = [];
+  cats.forEach((c) => columns.push(buildColumn(c.id, c.title, byCat.get(c.id) || [], c)));
+  // Uncategorized column is always present and sits last.
+  columns.push(buildColumn(UNCATEGORIZED, "Uncategorized", byCat.get(UNCATEGORIZED) || [], null));
+
+  els.wsBoard.replaceChildren(...columns);
+}
+
+function buildColumn(colId, title, docs, category) {
+  const col = document.createElement("div");
+  col.className = "ws-col";
+  col.dataset.colId = colId;
+
+  const head = document.createElement("div");
+  head.className = "ws-col-head";
+  const label = document.createElement("div");
+  label.className = "ws-col-title";
+  label.textContent = title;
+  const count = document.createElement("span");
+  count.className = "ws-col-count";
+  count.textContent = String(docs.length);
+  head.append(label, count);
+
+  if (category) {
+    const actions = document.createElement("div");
+    actions.className = "ws-col-actions";
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.className = "ws-col-btn";
+    rename.title = "Rename category";
+    rename.textContent = "✎";
+    rename.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameCategory(category).catch(console.error);
+    });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ws-col-btn danger";
+    del.title = "Delete category";
+    del.textContent = "⌫";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteCategory(category).catch(console.error);
+    });
+    actions.append(rename, del);
+    head.append(actions);
+  }
+
+  const bodyWrap = document.createElement("div");
+  bodyWrap.className = "ws-col-body";
+  if (docs.length) {
+    docs.forEach((d) => bodyWrap.append(buildDocCard(d)));
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "ws-col-empty";
+    empty.textContent = "Drop PDFs here";
+    bodyWrap.append(empty);
+  }
+
+  // Drop target: the whole column.
+  col.addEventListener("dragover", (e) => {
+    if (!state.dragDocId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    col.classList.add("drag-over");
+  });
+  col.addEventListener("dragleave", (e) => {
+    // Only clear when leaving the column entirely, not when crossing child elements.
+    if (!col.contains(e.relatedTarget)) col.classList.remove("drag-over");
+  });
+  col.addEventListener("drop", (e) => {
+    e.preventDefault();
+    col.classList.remove("drag-over");
+    const docId = state.dragDocId;
+    state.dragDocId = null;
+    if (!docId) return;
+    const newCategoryId = colId === UNCATEGORIZED ? null : colId;
+    const position = computeDropPosition(bodyWrap, newCategoryId, docId, e.clientY);
+    moveDocument(docId, newCategoryId, position).catch(console.error);
+  });
+
+  col.append(head, bodyWrap);
+  return col;
+}
+
+// Figure out the float position for a dropped card, based on where (vertically) it
+// landed relative to the sibling cards already in the target column.
+function computeDropPosition(bodyWrap, newCategoryId, draggedId, clientY) {
+  const siblings = Array.from(bodyWrap.querySelectorAll(".doc-card"))
+    .filter((el) => el.dataset.docId !== draggedId)
+    .map((el) => state.wsDetail.documents.find((d) => d.id === el.dataset.docId))
+    .filter(Boolean);
+
+  // Find insertion index: first sibling whose vertical midpoint is below the cursor.
+  const cards = Array.from(bodyWrap.querySelectorAll(".doc-card")).filter(
+    (el) => el.dataset.docId !== draggedId
+  );
+  let index = siblings.length;
+  for (let i = 0; i < cards.length; i += 1) {
+    const rect = cards[i].getBoundingClientRect();
+    if (clientY < rect.top + rect.height / 2) {
+      index = i;
+      break;
+    }
+  }
+
+  const posOf = (d) => (typeof d.position === "number" ? d.position : 0);
+  if (!siblings.length) return 1;
+  if (index <= 0) return posOf(siblings[0]) - 1;
+  if (index >= siblings.length) return posOf(siblings[siblings.length - 1]) + 1;
+  return (posOf(siblings[index - 1]) + posOf(siblings[index])) / 2;
+}
+
+async function moveDocument(docId, categoryId, position) {
+  const doc = state.wsDetail.documents.find((d) => d.id === docId);
+  if (!doc) return;
+  // Optimistic update, then persist; re-fetch on failure to resync.
+  const prev = { category_id: doc.category_id, position: doc.position };
+  doc.category_id = categoryId;
+  doc.position = position;
+  state.wsDetail.documents.sort((a, b) => (a.position || 0) - (b.position || 0));
+  renderBoard();
+  try {
+    const res = await fetch(`/api/documents/${docId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category_id: categoryId, position }),
+    });
+    if (!res.ok) throw new Error("Move failed");
+    const data = await res.json();
+    if (data.document) Object.assign(doc, data.document);
+  } catch (err) {
+    console.error(err);
+    doc.category_id = prev.category_id;
+    doc.position = prev.position;
+    await refreshWorkspaceDetail();
+  }
+}
+
+async function createCategory() {
+  const wsId = state.currentWorkspaceId;
+  if (!wsId) return;
+  const title = (window.prompt("New category name") || "").trim();
+  if (!title) return;
+  try {
+    const res = await fetch(`/api/workspaces/${wsId}/categories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) throw new Error("Create failed");
+    await refreshWorkspaceDetail();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function renameCategory(cat) {
+  const title = (window.prompt("Rename category", cat.title || "") || "").trim();
+  if (!title || title === cat.title) return;
+  try {
+    const res = await fetch(`/api/categories/${cat.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) throw new Error("Rename failed");
+    await refreshWorkspaceDetail();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function deleteCategory(cat) {
+  if (!window.confirm(`Delete category “${cat.title}”? Its PDFs move to Uncategorized.`)) return;
+  try {
+    const res = await fetch(`/api/categories/${cat.id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Delete failed");
+    await refreshWorkspaceDetail();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function refreshWorkspaceDetail() {
+  await fetchWorkspaceDetail(state.currentWorkspaceId);
+  renderWorkspaceDetail();
 }
 
 // Fill the workspace Settings block from the (masked) workspace object. The API key is
@@ -4101,6 +4331,8 @@ function wireEvents() {
     });
   }
   if (els.wsAddPdfBtn) els.wsAddPdfBtn.addEventListener("click", () => els.docUploadInput.click());
+  if (els.wsAddCategoryBtn)
+    els.wsAddCategoryBtn.addEventListener("click", () => createCategory().catch(console.error));
 
   if (els.wsSettingsForm) {
     els.wsSettingsForm.addEventListener("submit", (e) => {

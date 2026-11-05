@@ -158,6 +158,18 @@ def init_db() -> None:
                 last_opened_at TEXT
             );
 
+            -- Categories group a workspace's PDFs into kanban columns. A document with
+            -- category_id NULL is "Uncategorized" (an always-present column in the UI).
+            CREATE TABLE IF NOT EXISTS categories (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                position REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+            );
+
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT,
@@ -165,12 +177,15 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 original_name TEXT NOT NULL,
                 num_pages INTEGER,
+                category_id TEXT,
+                position REAL NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_opened_at TEXT,
                 FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
-                FOREIGN KEY(file_id) REFERENCES files(id)
+                FOREIGN KEY(file_id) REFERENCES files(id),
+                FOREIGN KEY(category_id) REFERENCES categories(id)
             );
 
             CREATE TABLE IF NOT EXISTS highlights (
@@ -235,7 +250,15 @@ def init_db() -> None:
         file_columns = {row["name"] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
         if "workspace_id" not in file_columns:
             conn.execute("ALTER TABLE files ADD COLUMN workspace_id TEXT")
+        # Kanban categories: documents gain a nullable category_id and a float position
+        # (gap-based ordering) on old databases.
+        if "category_id" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN category_id TEXT")
+        if "position" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN position REAL NOT NULL DEFAULT 0")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_category_id ON documents(category_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_categories_workspace_id ON categories(workspace_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace_id ON files(workspace_id)")
 
         # Per-workspace LLM settings (bring-your-own endpoint/key/model for the Claude backend).
@@ -755,12 +778,19 @@ def create_document(
     doc_id = uuid.uuid4().hex
     created_at = now_iso()
     with DB_LOCK, db_connection() as conn:
+        # New PDFs append to the bottom of the Uncategorized column (category_id NULL).
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) AS m FROM documents "
+            "WHERE workspace_id IS ? AND category_id IS NULL",
+            (workspace_id,),
+        ).fetchone()
+        position = float(row["m"] or 0) + 1.0
         conn.execute(
             """
-            INSERT INTO documents (id, workspace_id, file_id, title, original_name, num_pages, created_at, updated_at, last_opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (id, workspace_id, file_id, title, original_name, num_pages, position, created_at, updated_at, last_opened_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (doc_id, workspace_id, file_id, title or original_name, original_name, num_pages, created_at, created_at, created_at),
+            (doc_id, workspace_id, file_id, title or original_name, original_name, num_pages, position, created_at, created_at, created_at),
         )
     doc = get_document(doc_id)
     if not doc:
@@ -779,12 +809,13 @@ def list_documents(workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
         if workspace_id:
             rows = conn.execute(
                 "SELECT * FROM documents WHERE archived = 0 AND workspace_id = ? "
-                "ORDER BY COALESCE(last_opened_at, created_at) DESC",
+                "ORDER BY position ASC, COALESCE(last_opened_at, created_at) DESC",
                 (workspace_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM documents WHERE archived = 0 ORDER BY COALESCE(last_opened_at, created_at) DESC"
+                "SELECT * FROM documents WHERE archived = 0 "
+                "ORDER BY position ASC, COALESCE(last_opened_at, created_at) DESC"
             ).fetchall()
     return [public_document(row) for row in rows]
 
@@ -866,6 +897,95 @@ def update_document(document_id: str, title: str) -> None:
             "UPDATE documents SET title = ?, original_name = ?, updated_at = ? WHERE id = ?",
             (new_title, new_title, now_iso(), document_id),
         )
+
+
+def set_document_placement(
+    document_id: str, category_id: Optional[str], position: float
+) -> Optional[Dict[str, Any]]:
+    """Move a document to a category (NULL = Uncategorized) at a float position.
+    Kept separate from update_document() so a drag never touches the file on disk."""
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            "UPDATE documents SET category_id = ?, position = ?, updated_at = ? WHERE id = ?",
+            (category_id, float(position), now_iso(), document_id),
+        )
+    return get_document(document_id)
+
+
+# ── categories (kanban columns within a workspace) ──────────────────────
+
+def public_category(row: sqlite3.Row) -> Dict[str, Any]:
+    cat = dict(row)
+    cat["position"] = float(cat.get("position") or 0)
+    return cat
+
+
+def create_category(workspace_id: str, title: str) -> Dict[str, Any]:
+    if not get_workspace(workspace_id):
+        raise ValueError("Workspace does not exist")
+    cat_id = uuid.uuid4().hex
+    created_at = now_iso()
+    with DB_LOCK, db_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) AS m FROM categories WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchone()
+        position = float(row["m"] or 0) + 1.0
+        conn.execute(
+            "INSERT INTO categories (id, workspace_id, title, position, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (cat_id, workspace_id, title.strip() or "Untitled", position, created_at, created_at),
+        )
+    cat = get_category(cat_id)
+    if not cat:
+        raise RuntimeError("Failed to create category")
+    return cat
+
+
+def get_category(category_id: str) -> Optional[Dict[str, Any]]:
+    with DB_LOCK, db_connection() as conn:
+        row = conn.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone()
+    return public_category(row) if row else None
+
+
+def list_categories(workspace_id: str) -> List[Dict[str, Any]]:
+    with DB_LOCK, db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM categories WHERE workspace_id = ? ORDER BY position ASC, created_at ASC",
+            (workspace_id,),
+        ).fetchall()
+    return [public_category(row) for row in rows]
+
+
+def update_category(
+    category_id: str, *, title: Optional[str] = None, position: Optional[float] = None
+) -> Optional[Dict[str, Any]]:
+    sets: List[str] = []
+    params: List[Any] = []
+    if title is not None:
+        sets.append("title = ?")
+        params.append(title.strip() or "Untitled")
+    if position is not None:
+        sets.append("position = ?")
+        params.append(float(position))
+    if sets:
+        sets.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(category_id)
+        with DB_LOCK, db_connection() as conn:
+            conn.execute(f"UPDATE categories SET {', '.join(sets)} WHERE id = ?", params)
+    return get_category(category_id)
+
+
+def delete_category(category_id: str) -> Dict[str, Any]:
+    """Delete a category; its documents fall back to Uncategorized (category_id NULL)."""
+    with DB_LOCK, db_connection() as conn:
+        conn.execute(
+            "UPDATE documents SET category_id = NULL, updated_at = ? WHERE category_id = ?",
+            (now_iso(), category_id),
+        )
+        conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+    return {"deleted": True}
 
 
 def delete_document(document_id: str) -> Dict[str, Any]:
