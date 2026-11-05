@@ -272,6 +272,47 @@ function formatTokens(value) {
   return `${n}`;
 }
 
+// ── Inline prompt / confirm dialog ───────────────────────────────────────────
+// Replaces window.prompt / window.confirm so browsers can't block them on HTTPS.
+// showInputModal → Promise<string|null>  (null = cancelled)
+// showConfirmModal → Promise<boolean>
+
+let _dialogResolve = null;
+
+function _openDialog({ title = "", body = "", inputValue = "", isConfirm = false } = {}) {
+  const el = document.getElementById("appDialog");
+  const titleEl = document.getElementById("appDialogTitle");
+  const bodyEl = document.getElementById("appDialogBody");
+  const inputEl = document.getElementById("appDialogInput");
+  if (!el) return Promise.resolve(isConfirm ? false : null);
+
+  titleEl.textContent = title;
+  bodyEl.textContent = body;
+  bodyEl.hidden = !body;
+  inputEl.hidden = isConfirm;
+  inputEl.value = inputValue;
+  el.hidden = false;
+  requestAnimationFrame(() => {
+    if (!isConfirm) { inputEl.focus(); inputEl.select(); }
+    else document.getElementById("appDialogOk")?.focus();
+  });
+  return new Promise((resolve) => { _dialogResolve = resolve; });
+}
+
+function _closeDialog(result) {
+  const el = document.getElementById("appDialog");
+  if (el) el.hidden = true;
+  if (_dialogResolve) { _dialogResolve(result); _dialogResolve = null; }
+}
+
+function showInputModal(title, defaultValue = "") {
+  return _openDialog({ title, inputValue: defaultValue, isConfirm: false });
+}
+
+function showConfirmModal(message) {
+  return _openDialog({ body: message, isConfirm: true });
+}
+
 function compact(text, limit = 140) {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
@@ -963,7 +1004,7 @@ async function moveWorkspace(wsId, categoryId, position) {
 }
 
 async function createWorkspaceCategory() {
-  const title = (window.prompt("New category name") || "").trim();
+  const title = (await showInputModal("New category name") || "").trim();
   if (!title) return;
   try {
     const res = await fetch("/api/workspace-categories", {
@@ -979,7 +1020,7 @@ async function createWorkspaceCategory() {
 }
 
 async function renameWorkspaceCategory(cat) {
-  const title = (window.prompt("Rename category", cat.title || "") || "").trim();
+  const title = (await showInputModal("Rename category", cat.title || "") || "").trim();
   if (!title || title === cat.title) return;
   try {
     const res = await fetch(`/api/workspace-categories/${cat.id}`, {
@@ -995,7 +1036,7 @@ async function renameWorkspaceCategory(cat) {
 }
 
 async function deleteWorkspaceCategory(cat) {
-  if (!window.confirm(`Delete category “${cat.title}”? Its workspaces move to Uncategorized.`))
+  if (!await showConfirmModal(`Delete category “${cat.title}”? Its workspaces move to Uncategorized.`))
     return;
   try {
     const res = await fetch(`/api/workspace-categories/${cat.id}`, { method: "DELETE" });
@@ -1592,7 +1633,7 @@ async function moveDocument(docId, categoryId, position) {
 async function createCategory() {
   const wsId = state.currentWorkspaceId;
   if (!wsId) return;
-  const title = (window.prompt("New category name") || "").trim();
+  const title = (await showInputModal("New category name") || "").trim();
   if (!title) return;
   try {
     const res = await fetch(`/api/workspaces/${wsId}/categories`, {
@@ -1608,7 +1649,7 @@ async function createCategory() {
 }
 
 async function renameCategory(cat) {
-  const title = (window.prompt("Rename category", cat.title || "") || "").trim();
+  const title = (await showInputModal("Rename category", cat.title || "") || "").trim();
   if (!title || title === cat.title) return;
   try {
     const res = await fetch(`/api/categories/${cat.id}`, {
@@ -1624,7 +1665,7 @@ async function renameCategory(cat) {
 }
 
 async function deleteCategory(cat) {
-  if (!window.confirm(`Delete category “${cat.title}”? Its PDFs move to Uncategorized.`)) return;
+  if (!await showConfirmModal(`Delete category “${cat.title}”? Its PDFs move to Uncategorized.`)) return;
   try {
     const res = await fetch(`/api/categories/${cat.id}`, { method: "DELETE" });
     if (!res.ok) throw new Error("Delete failed");
@@ -1690,7 +1731,7 @@ async function saveWorkspaceSettings(options = {}) {
 }
 
 async function renameWorkspace(ws) {
-  const next = window.prompt("Rename workspace", ws.title || "");
+  const next = await showInputModal("Rename workspace", ws.title || "");
   if (next == null) return;
   const title = next.trim();
   if (!title || title === ws.title) return;
@@ -1716,7 +1757,7 @@ async function renameWorkspace(ws) {
 
 async function removeWorkspace(ws) {
   const warn = `Delete workspace "${ws.title}"?\nIts ${ws.document_count || 0} PDF(s), with all highlights and question trees, will be permanently deleted.`;
-  if (!window.confirm(warn)) return;
+  if (!await showConfirmModal(warn)) return;
   try {
     const res = await fetch(`/api/workspaces/${ws.id}`, { method: "DELETE" });
     if (!res.ok) {
@@ -1743,18 +1784,10 @@ async function removeWorkspace(ws) {
 
 async function renameDocument(doc) {
   if (!doc) return;
-  const next = window.prompt(
-    "Rename PDF",
-    doc.title || doc.original_name || ""
-  );
+  const next = await showInputModal("Rename PDF", doc.title || doc.original_name || "");
   if (!next) return;
-  
   const title = next.trim();
-  if (!title) {
-    window.alert("Title cannot be empty");
-    return;
-  }
-  if (title === (doc.title || doc.original_name)) return;
+  if (!title || title === (doc.title || doc.original_name)) return;
   
   try {
     const res = await fetch(`/api/documents/${doc.id}`, {
@@ -1806,12 +1839,9 @@ async function importWorkspaceFile(fileObj) {
 
 async function deleteDocument(doc) {
   if (!doc) return;
-  if (
-    !window.confirm(
-      `Delete "${doc.title || doc.original_name}"?\nAll of its highlights and question nodes will be deleted too, and this can't be undone.`
-    )
-  )
-    return;
+  if (!await showConfirmModal(
+    `Delete "${doc.title || doc.original_name}"?\nAll of its highlights and question nodes will be deleted too, and this can't be undone.`
+  )) return;
   try {
     const res = await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
     if (!res.ok) {
@@ -3874,7 +3904,7 @@ async function appendSelectionToNote() {
 async function renameSelected() {
   const node = selectedNode();
   if (!node) return;
-  const next = window.prompt("Rename node", node.title || "");
+  const next = await showInputModal("Rename node", node.title || "");
   if (next == null) return;
   const title = next.trim();
   if (!title || title === node.title) return;
@@ -3898,7 +3928,7 @@ async function deleteSelected() {
   const node = selectedNode();
   if (!node) return;
   const children = state.childrenByParent.get(node.id) || [];
-  const confirmed = window.confirm(
+  const confirmed = await showConfirmModal(
     children.length
       ? "Delete this node and all nodes after it?"
       : "Delete this node?"
@@ -4903,6 +4933,37 @@ function wireEvents() {
     });
   }
   if (els.bridgeCloseBtn) els.bridgeCloseBtn.addEventListener("click", closeBridgeModal);
+
+  // Inline dialog (prompt/confirm replacement)
+  const appDialogEl = document.getElementById("appDialog");
+  const appDialogOk = document.getElementById("appDialogOk");
+  const appDialogInput = document.getElementById("appDialogInput");
+  if (appDialogOk) appDialogOk.addEventListener("click", () => {
+    const inputEl = document.getElementById("appDialogInput");
+    _closeDialog(inputEl && !inputEl.hidden ? inputEl.value : true);
+  });
+  if (appDialogInput) appDialogInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      _closeDialog(appDialogInput.value);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      _closeDialog(null);
+    }
+  });
+  if (appDialogEl) appDialogEl.addEventListener("click", (e) => {
+    if (e.target && e.target.hasAttribute && e.target.hasAttribute("data-dialog-cancel")) {
+      const inputEl = document.getElementById("appDialogInput");
+      _closeDialog(inputEl && !inputEl.hidden ? null : false);
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && appDialogEl && !appDialogEl.hidden) {
+      e.preventDefault();
+      const inputEl = document.getElementById("appDialogInput");
+      _closeDialog(inputEl && !inputEl.hidden ? null : false);
+    }
+  });
   if (els.localModelSelect) {
     els.localModelSelect.addEventListener("change", () => {
       state.localModel = els.localModelSelect.value;
@@ -4928,7 +4989,7 @@ function wireEvents() {
   if (els.homeBtn) els.homeBtn.addEventListener("click", () => navigate("home"));
   if (els.homeNewBtn) {
     els.homeNewBtn.addEventListener("click", async () => {
-      const title = window.prompt("New workspace name");
+      const title = await showInputModal("New workspace name");
       if (title == null) return;
       const created = await createWorkspace(title);
       if (created) navigate("workspace", { wsId: created.id });

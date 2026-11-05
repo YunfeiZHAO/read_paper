@@ -1686,6 +1686,91 @@ button.meta-pill {
   align-items: center;
 }
 
+/* ── Inline prompt/confirm dialog ─────────────────────────────────────────── */
+.app-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.app-dialog[hidden] { display: none; }
+
+.app-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.app-dialog-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, calc(100vw - 32px));
+  padding: 18px 20px 16px;
+  background: var(--panel, #fffdfa);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.app-dialog-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.app-dialog-body {
+  font-size: 13px;
+  color: var(--sub);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.app-dialog-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.app-dialog-input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.app-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.app-dialog-btn {
+  padding: 5px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.app-dialog-btn:hover { border-color: var(--blue); }
+
+.app-dialog-btn.primary {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+/* ── Events / bridge / answer modals ─────────────────────────────────────── */
 .events-modal {
   position: fixed;
   inset: 0;

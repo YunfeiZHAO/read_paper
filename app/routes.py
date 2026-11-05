@@ -134,11 +134,19 @@ async def api_auth_login(request: Request) -> JSONResponse:
     
     token = create_session_token(email)
     response = JSONResponse({"message": "Login successful", "email": email}, status_code=200)
+    # Detect HTTPS from the Forwarded/X-Forwarded-Proto headers Traefik/nginx set,
+    # or from the request URL scheme. Use secure=True when on HTTPS so the cookie
+    # is sent back by the browser; non-secure cookies are silently dropped over HTTPS.
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto") or
+        request.headers.get("forwarded", "").split("proto=")[-1].split(";")[0]
+    ).strip().lower()
+    is_https = forwarded_proto == "https" or str(request.url.scheme) == "https"
     response.set_cookie(
         key="auth_token",
         value=token,
         httponly=True,
-        secure=False,  # Set to True in production with HTTPS
+        secure=is_https,
         samesite="lax",
         max_age=86400,  # 24 hours
     )
