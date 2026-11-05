@@ -1,8 +1,10 @@
 """All HTTP routes, attached to a single FastAPI APIRouter and registered by create_app()."""
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -178,9 +180,37 @@ def api_auth_verify(request: Request) -> Dict[str, Any]:
     return {"authenticated": False}
 
 
+_STATIC_REF_RE = re.compile(r'((?:src|href)=")/static/([^"?#]+)(")')
+
+
+def _static_version(rel_path: str) -> str:
+    path = BASE_DIR / "static" / rel_path
+    try:
+        stat = path.stat()
+    except OSError:
+        return ""
+    return hashlib.sha1(f"{stat.st_mtime_ns}:{stat.st_size}".encode()).hexdigest()[:10]
+
+
+def _versioned_index_html() -> str:
+    """Append ?v=<hash> to /static/ asset URLs so a deploy busts proxy/CDN/browser caches
+    (e.g. Cloudflare caches .js/.css by extension, which would pair new HTML with stale JS)."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def repl(m: re.Match) -> str:
+        version = _static_version(m.group(2))
+        suffix = f"?v={version}" if version else ""
+        return f"{m.group(1)}/static/{m.group(2)}{suffix}{m.group(3)}"
+
+    return _STATIC_REF_RE.sub(repl, html)
+
+
 @router.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
-    return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        _versioned_index_html(),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @router.get("/favicon.ico")
