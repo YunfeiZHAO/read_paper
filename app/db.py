@@ -322,25 +322,6 @@ def init_db() -> None:
         _migrate_node_notes_to_files(conn)
         _reconcile_notes(conn)
 
-        # Attach any orphaned documents/files (no workspace yet) to a "Default" workspace, so
-        # existing PDFs survive the introduction of the workspace layer and the home page has content.
-        orphan_doc = conn.execute(
-            "SELECT 1 FROM documents WHERE workspace_id IS NULL LIMIT 1"
-        ).fetchone()
-        orphan_file = conn.execute(
-            "SELECT 1 FROM files WHERE workspace_id IS NULL LIMIT 1"
-        ).fetchone()
-        if orphan_doc or orphan_file:
-            default_id = _ensure_default_workspace(conn)
-            conn.execute(
-                "UPDATE documents SET workspace_id = ? WHERE workspace_id IS NULL",
-                (default_id,),
-            )
-            conn.execute(
-                "UPDATE files SET workspace_id = ? WHERE workspace_id IS NULL",
-                (default_id,),
-            )
-
 
 def _migrate_node_notes_to_files(conn: sqlite3.Connection) -> None:
     """One-time backfill: move any legacy inline ``nodes.note_md`` into a file-backed note.
@@ -377,25 +358,6 @@ def _reconcile_notes(conn: sqlite3.Connection) -> None:
     for row in conn.execute("SELECT id, rel_path FROM notes").fetchall():
         if not note_file_path(row["rel_path"]).exists():
             conn.execute("DELETE FROM notes WHERE id = ?", (row["id"],))
-
-
-def _ensure_default_workspace(conn: sqlite3.Connection) -> str:
-    """Return a default workspace id, creating one if none exists (used during migration/backfill)."""
-    row = conn.execute(
-        "SELECT id FROM workspaces ORDER BY created_at LIMIT 1"
-    ).fetchone()
-    if row:
-        return str(row["id"])
-    ws_id = uuid.uuid4().hex
-    created_at = now_iso()
-    conn.execute(
-        """
-        INSERT INTO workspaces (id, title, description, created_at, updated_at, last_opened_at)
-        VALUES (?, ?, '', ?, ?, ?)
-        """,
-        (ws_id, "Default", created_at, created_at, created_at),
-    )
-    return ws_id
 
 
 def public_node(row: sqlite3.Row) -> Dict[str, Any]:
@@ -1018,9 +980,16 @@ def get_document_by_filename(original_name: str, workspace_id: Optional[str]) ->
     return public_document(row) if row else None
 
 
-def list_documents(workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_documents(
+    workspace_id: Optional[str] = None, *, unassigned_only: bool = False
+) -> List[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
-        if workspace_id:
+        if unassigned_only:
+            rows = conn.execute(
+                f"{_DOC_SELECT} WHERE d.archived = 0 AND d.workspace_id IS NULL "
+                "ORDER BY d.position ASC, d.created_at DESC"
+            ).fetchall()
+        elif workspace_id:
             rows = conn.execute(
                 f"{_DOC_SELECT} WHERE d.archived = 0 AND d.workspace_id = ? "
                 "ORDER BY d.position ASC, COALESCE(d.last_opened_at, d.created_at) DESC",
@@ -1124,6 +1093,49 @@ def set_document_placement(
             (category_id, float(position), now_iso(), document_id),
         )
     return get_document(document_id)
+
+
+def move_document_to_workspace(
+    document_id: str, workspace_id: Optional[str]
+) -> Dict[str, Any]:
+    """Reassign a PDF without recreating its document or changing its history."""
+    with DB_LOCK, db_connection() as conn:
+        doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+        if not doc:
+            raise LookupError("Document does not exist")
+        if workspace_id is not None and not conn.execute(
+            "SELECT 1 FROM workspaces WHERE id = ? AND archived = 0", (workspace_id,)
+        ).fetchone():
+            raise ValueError("Workspace does not exist")
+        if doc["workspace_id"] != workspace_id:
+            duplicate = conn.execute(
+                "SELECT 1 FROM documents WHERE workspace_id IS ? AND original_name = ? AND id != ?",
+                (workspace_id, doc["original_name"], document_id),
+            ).fetchone()
+            if duplicate:
+                raise FileExistsError("A PDF with this filename already exists in the destination")
+            position = conn.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM documents "
+                "WHERE workspace_id IS ? AND category_id IS NULL",
+                (workspace_id,),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE documents SET workspace_id = ?, category_id = NULL, position = ?, "
+                "updated_at = ? WHERE id = ?",
+                (workspace_id, position, now_iso(), document_id),
+            )
+            conn.execute(
+                "UPDATE files SET workspace_id = ? WHERE id = ?",
+                (workspace_id, doc["file_id"]),
+            )
+            conn.execute(
+                "UPDATE study_sessions SET workspace_id = ? WHERE document_id = ?",
+                (workspace_id or "", document_id),
+            )
+    result = get_document(document_id)
+    if not result:
+        raise RuntimeError("Moved document could not be loaded")
+    return result
 
 
 _UNSET = object()  # sentinel: "argument not supplied" (distinct from an explicit None)

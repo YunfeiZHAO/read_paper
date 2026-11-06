@@ -51,6 +51,7 @@ from .db import (
     link_highlight_to_node,
     list_categories,
     list_documents,
+    move_document_to_workspace,
     list_files_for_workspace,
     list_highlights,
     list_workspace_categories,
@@ -130,13 +131,13 @@ def _require_upload_auth(request: Request) -> None:
 
 # ── Authentication endpoints ────────────────────────────────────────────
 
-@router.get("/api/auth/status")
+@router.get("/api/auth/status", tags=["Authentication"])
 def api_auth_status() -> Dict[str, Any]:
     """Return authentication status."""
     return {"auth_enabled": AUTH_ENABLED}
 
 
-@router.post("/api/auth/login")
+@router.post("/api/auth/login", tags=["Authentication"])
 async def api_auth_login(request: Request) -> JSONResponse:
     """Login endpoint: verify credentials and return session token."""
     if not AUTH_ENABLED:
@@ -173,7 +174,7 @@ async def api_auth_login(request: Request) -> JSONResponse:
     return response
 
 
-@router.post("/api/auth/logout")
+@router.post("/api/auth/logout", tags=["Authentication"])
 def api_auth_logout() -> JSONResponse:
     """Logout endpoint: clear session token."""
     response = JSONResponse({"message": "Logout successful"})
@@ -181,7 +182,7 @@ def api_auth_logout() -> JSONResponse:
     return response
 
 
-@router.get("/api/auth/verify")
+@router.get("/api/auth/verify", tags=["Authentication"])
 def api_auth_verify(request: Request) -> Dict[str, Any]:
     """Verify if the current session is valid."""
     if not AUTH_ENABLED:
@@ -223,7 +224,7 @@ def _versioned_index_html() -> str:
     return _STATIC_REF_RE.sub(repl, html)
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, tags=["Application"])
 def index() -> HTMLResponse:
     return HTMLResponse(
         _versioned_index_html(),
@@ -231,12 +232,12 @@ def index() -> HTMLResponse:
     )
 
 
-@router.get("/favicon.ico")
+@router.get("/favicon.ico", tags=["Application"])
 def favicon() -> Response:
     return Response(status_code=204)
 
 
-@router.get("/api/tree")
+@router.get("/api/tree", tags=["Questions"])
 def api_tree(request: Request) -> Dict[str, Any]:
     """Return every node and file in the database (the frontend's initial tree load)."""
     _require_auth(request)
@@ -250,7 +251,7 @@ def api_tree(request: Request) -> Dict[str, Any]:
     }
 
 
-@router.post("/api/ask")
+@router.post("/api/ask", tags=["Questions"])
 async def api_ask(request: Request) -> JSONResponse:
     """Create a queued Q&A node and kick off a background worker to answer it.
 
@@ -317,7 +318,7 @@ async def api_ask(request: Request) -> JSONResponse:
     return JSONResponse({"node": node}, status_code=202)
 
 
-@router.post("/api/nodes/{node_id}/bridge-events")
+@router.post("/api/nodes/{node_id}/bridge-events", tags=["Questions"])
 async def api_bridge_events(node_id: str, request: Request) -> Dict[str, Any]:
     """Persist events/answer produced by the browser-driven local Claude Code bridge.
 
@@ -381,13 +382,24 @@ async def api_bridge_events(node_id: str, request: Request) -> Dict[str, Any]:
     return {"node": get_node(node_id)}
 
 
-@router.post("/api/upload")
+@router.post(
+    "/api/upload",
+    tags=["Files"],
+    summary="Upload question attachments",
+)
 async def api_upload(
     request: Request,
     files: Optional[List[UploadFile]] = File(None),
     file: Optional[List[UploadFile]] = File(None),
     workspace_id: str = Form(""),
 ) -> JSONResponse:
+    """Store one or more files as attachments for questions.
+
+    This endpoint does not create PDF documents. Use ``/api/batch-upload`` to
+    import PDFs into the document library with duplicate handling.
+    Send uploads using the ``files`` field (repeat it for multiple files).
+    The legacy ``file`` field is also accepted but is not shown in Swagger.
+    """
     _require_auth(request)
     uploaded = files or file or []
     if not uploaded:
@@ -404,7 +416,11 @@ async def api_upload(
     return JSONResponse({"files": saved_files}, status_code=201)
 
 
-@router.post("/api/batch-upload")
+@router.post(
+    "/api/batch-upload",
+    tags=["Files"],
+    summary="Import PDFs as workspace documents",
+)
 async def api_batch_upload(
     request: Request,
     files: Optional[List[UploadFile]] = File(None),
@@ -414,7 +430,17 @@ async def api_batch_upload(
     category_id: str = Form(""),
     on_conflict: str = Form("skip"),
 ) -> JSONResponse:
-    """Batch-upload PDFs, using the filename as a natural key within the workspace.
+    """Import one or more PDFs as documents, using filename as a workspace-scoped key.
+
+    Unlike ``/api/upload``, this creates document records in the PDF library rather
+    than storing question attachments. Use ``workspace_id`` or ``workspace_name``
+    to choose a workspace; omit both to place PDFs in the dashboard's Uploaded
+    inbox. ``category_id`` optionally assigns the created documents to a category
+    in the selected workspace.
+
+    Send PDFs as binary multipart uploads using the ``files`` field (repeat it
+    for multiple PDFs). The legacy ``file`` field is also accepted but is not
+    shown in Swagger. Do not send both fields or text placeholders.
 
     Auth: accepts ``Authorization: Bearer <session-JWT>`` (from ``/api/auth/login``) so
     agents and scripts can call this without a browser session. Falls back to the standard
@@ -427,6 +453,7 @@ async def api_batch_upload(
 
     Returns a list of per-file results, each with ``status`` set to one of
     ``created``, ``already_exists``, or ``failed``.
+    A file replaced using ``on_conflict=replace`` has status ``replaced``.
     """
     _require_upload_auth(request)
 
@@ -454,8 +481,12 @@ async def api_batch_upload(
 
     if workspace_id and not get_workspace(workspace_id):
         raise HTTPException(status_code=400, detail="Workspace does not exist")
-    if category_id and not get_category(category_id):
-        raise HTTPException(status_code=400, detail="Category does not exist")
+    if category_id:
+        category = get_category(category_id)
+        if not category:
+            raise HTTPException(status_code=400, detail="Category does not exist")
+        if category["workspace_id"] != workspace_id:
+            raise HTTPException(status_code=400, detail="Category does not belong to the selected workspace")
 
     results = []
     for item in uploaded:
@@ -463,19 +494,26 @@ async def api_batch_upload(
             continue
         filename = item.filename
         try:
+            if not filename.lower().endswith(".pdf"):
+                raise ValueError("Only PDF files can be imported")
             existing = get_document_by_filename(filename, workspace_id)
             if existing and on_conflict == "skip":
                 results.append({"filename": filename, "status": "already_exists", "document": existing})
                 continue
 
             data = await item.read()
+            if b"%PDF-" not in data[:1024]:
+                raise ValueError("File does not contain a valid PDF header")
 
             if existing and on_conflict == "replace":
                 # Overwrite the underlying file and keep the same document row.
                 saved = store_upload(filename, data, item.content_type, workspace_id=workspace_id)
-                from .db import update_document as _update_doc
-                _update_doc(existing["id"], existing.get("title") or filename)
-                results.append({"filename": filename, "status": "replaced", "document": get_document_by_filename(filename, workspace_id)})
+                with DB_LOCK, db_connection() as conn:
+                    conn.execute(
+                        "UPDATE documents SET file_id = ?, updated_at = ? WHERE id = ?",
+                        (saved["id"], now_iso(), existing["id"]),
+                    )
+                results.append({"filename": filename, "status": "replaced", "document": get_document(existing["id"])})
             else:
                 saved = store_upload(filename, data, item.content_type, workspace_id=workspace_id)
                 doc = create_document(
@@ -493,7 +531,7 @@ async def api_batch_upload(
     return JSONResponse({"results": results}, status_code=207)
 
 
-@router.get("/api/files/{file_id}/download")
+@router.get("/api/files/{file_id}/download", tags=["Files"])
 def api_download_file(request: Request, file_id: str) -> Any:
     _require_auth(request)
     item = get_file(file_id)
@@ -505,7 +543,7 @@ def api_download_file(request: Request, file_id: str) -> Any:
 # ── workspaces (a user project: a group of PDFs + a shared file drawer) ───
 
 
-@router.get("/api/workspaces")
+@router.get("/api/workspaces", tags=["Workspaces"])
 def api_list_workspaces(request: Request, include_archived: str = "") -> Dict[str, Any]:
     _require_auth(request)
     return {
@@ -514,7 +552,7 @@ def api_list_workspaces(request: Request, include_archived: str = "") -> Dict[st
     }
 
 
-@router.post("/api/workspaces")
+@router.post("/api/workspaces", tags=["Workspaces"])
 async def api_create_workspace(request: Request) -> JSONResponse:
     _require_auth(request)
     payload = await _json_body(request)
@@ -526,7 +564,7 @@ async def api_create_workspace(request: Request) -> JSONResponse:
     return JSONResponse({"workspace": ws}, status_code=201)
 
 
-@router.get("/api/workspaces/{workspace_id}")
+@router.get("/api/workspaces/{workspace_id}", tags=["Workspaces"])
 def api_get_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
     _require_auth(request)
     ws = get_workspace(workspace_id)
@@ -541,7 +579,7 @@ def api_get_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
     }
 
 
-@router.patch("/api/workspaces/{workspace_id}")
+@router.patch("/api/workspaces/{workspace_id}", tags=["Workspaces"])
 async def api_patch_workspace(workspace_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     if not get_workspace(workspace_id):
@@ -590,7 +628,7 @@ async def api_patch_workspace(workspace_id: str, request: Request) -> Dict[str, 
     return {"workspace": get_workspace(workspace_id)}
 
 
-@router.post("/api/workspace-categories")
+@router.post("/api/workspace-categories", tags=["Workspaces"])
 async def api_create_workspace_category(request: Request) -> JSONResponse:
     _require_auth(request)
     payload = await _json_body(request)
@@ -600,7 +638,7 @@ async def api_create_workspace_category(request: Request) -> JSONResponse:
     return JSONResponse({"category": create_workspace_category(title)}, status_code=201)
 
 
-@router.patch("/api/workspace-categories/{category_id}")
+@router.patch("/api/workspace-categories/{category_id}", tags=["Workspaces"])
 async def api_update_workspace_category(category_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     if not get_workspace_category(category_id):
@@ -620,7 +658,7 @@ async def api_update_workspace_category(category_id: str, request: Request) -> D
     return {"category": update_workspace_category(category_id, title=title, position=position)}
 
 
-@router.delete("/api/workspace-categories/{category_id}")
+@router.delete("/api/workspace-categories/{category_id}", tags=["Workspaces"])
 def api_delete_workspace_category(request: Request, category_id: str) -> Dict[str, Any]:
     _require_auth(request)
     if not get_workspace_category(category_id):
@@ -628,7 +666,7 @@ def api_delete_workspace_category(request: Request, category_id: str) -> Dict[st
     return {**delete_workspace_category(category_id)}
 
 
-@router.delete("/api/workspaces/{workspace_id}")
+@router.delete("/api/workspaces/{workspace_id}", tags=["Workspaces"])
 def api_delete_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
     _require_auth(request)
     if not get_workspace(workspace_id):
@@ -637,7 +675,7 @@ def api_delete_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
     return {"deleted": True, **result}
 
 
-@router.get("/api/workspaces/{workspace_id}/export")
+@router.get("/api/workspaces/{workspace_id}/export", tags=["Import & Export"])
 def api_export_workspace(workspace_id: str) -> Any:
     """Download the whole workspace (PDFs, shared files, highlights, chat tree, notes,
     AI scratch) as a single portable .zip. The secret API key is never included."""
@@ -658,7 +696,7 @@ def api_export_workspace(workspace_id: str) -> Any:
     )
 
 
-@router.post("/api/workspaces/import")
+@router.post("/api/workspaces/import", tags=["Import & Export"])
 async def api_import_workspace(file: UploadFile = File(...)) -> JSONResponse:
     """Import a workspace .zip exported by this app, recreating it with fresh IDs."""
     if not file.filename:
@@ -697,7 +735,7 @@ async def api_import_workspace(file: UploadFile = File(...)) -> JSONResponse:
 # ── documents / highlights ──────────────────────────────────────────────
 
 
-@router.post("/api/documents")
+@router.post("/api/documents", tags=["Documents"])
 async def api_create_document(
     request: Request,
     file: UploadFile = File(...),
@@ -725,13 +763,43 @@ async def api_create_document(
     return JSONResponse({"document": doc}, status_code=201)
 
 
-@router.get("/api/documents")
-def api_list_documents(request: Request, workspace_id: str = "") -> Dict[str, Any]:
+@router.get("/api/documents", tags=["Documents"])
+def api_list_documents(
+    request: Request, workspace_id: str = "", unassigned: bool = False
+) -> Dict[str, Any]:
     _require_auth(request)
-    return {"documents": list_documents((workspace_id or "").strip() or None)}
+    if unassigned and workspace_id.strip():
+        raise HTTPException(status_code=400, detail="Choose a workspace or unassigned documents, not both")
+    return {"documents": list_documents((workspace_id or "").strip() or None, unassigned_only=unassigned)}
 
 
-@router.get("/api/documents/{document_id}")
+@router.post("/api/documents/{document_id}/move", tags=["Documents"])
+async def api_move_document(document_id: str, request: Request) -> Dict[str, Any]:
+    """Move a PDF to a workspace, or back to Uploaded with ``workspace_id: null``."""
+    _require_auth(request)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(body, dict) or "workspace_id" not in body:
+        raise HTTPException(status_code=400, detail="workspace_id is required (null for Uploaded)")
+    workspace_id = body["workspace_id"]
+    if workspace_id is not None:
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise HTTPException(status_code=400, detail="workspace_id must be a non-empty string or null")
+        workspace_id = workspace_id.strip()
+    try:
+        document = move_document_to_workspace(document_id, workspace_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"document": document}
+
+
+@router.get("/api/documents/{document_id}", tags=["Documents"])
 def api_get_document(request: Request, document_id: str) -> Dict[str, Any]:
     _require_auth(request)
     doc = get_document(document_id)
@@ -745,7 +813,7 @@ def api_get_document(request: Request, document_id: str) -> Dict[str, Any]:
     }
 
 
-@router.patch("/api/documents/{document_id}")
+@router.patch("/api/documents/{document_id}", tags=["Documents"])
 async def api_update_document(document_id: str, request: Request) -> Dict[str, Any]:
     """Partial update of a document. A `title` key renames it (and the file on disk);
     `category_id`/`position` keys move it between kanban columns (a drag) without
@@ -805,7 +873,7 @@ async def api_update_document(document_id: str, request: Request) -> Dict[str, A
     return {"document": get_document(document_id)}
 
 
-@router.post("/api/workspaces/{workspace_id}/categories")
+@router.post("/api/workspaces/{workspace_id}/categories", tags=["Documents"])
 async def api_create_category(workspace_id: str, request: Request) -> JSONResponse:
     _require_auth(request)
     if not get_workspace(workspace_id):
@@ -818,7 +886,7 @@ async def api_create_category(workspace_id: str, request: Request) -> JSONRespon
     return JSONResponse({"category": cat}, status_code=201)
 
 
-@router.patch("/api/categories/{category_id}")
+@router.patch("/api/categories/{category_id}", tags=["Documents"])
 async def api_update_category(category_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     if not get_category(category_id):
@@ -838,7 +906,7 @@ async def api_update_category(category_id: str, request: Request) -> Dict[str, A
     return {"category": update_category(category_id, title=title, position=position)}
 
 
-@router.delete("/api/categories/{category_id}")
+@router.delete("/api/categories/{category_id}", tags=["Documents"])
 def api_delete_category(request: Request, category_id: str) -> Dict[str, Any]:
     _require_auth(request)
     if not get_category(category_id):
@@ -847,7 +915,7 @@ def api_delete_category(request: Request, category_id: str) -> Dict[str, Any]:
     return {**result}
 
 
-@router.delete("/api/documents/{document_id}")
+@router.delete("/api/documents/{document_id}", tags=["Documents"])
 def api_delete_document(request: Request, document_id: str) -> Dict[str, Any]:
     _require_auth(request)
     if not get_document(document_id):
@@ -856,7 +924,7 @@ def api_delete_document(request: Request, document_id: str) -> Dict[str, Any]:
     return {"deleted": True, **result}
 
 
-@router.get("/api/documents/{document_id}/file")
+@router.get("/api/documents/{document_id}/file", tags=["Documents"])
 def api_document_file(request: Request, document_id: str) -> Any:
     _require_auth(request)
     doc = get_document(document_id)
@@ -872,7 +940,7 @@ def api_document_file(request: Request, document_id: str) -> Any:
     )
 
 
-@router.get("/api/documents/{document_id}/highlights")
+@router.get("/api/documents/{document_id}/highlights", tags=["Highlights"])
 def api_list_highlights(request: Request, document_id: str) -> Dict[str, Any]:
     _require_auth(request)
     if not get_document(document_id):
@@ -880,7 +948,7 @@ def api_list_highlights(request: Request, document_id: str) -> Dict[str, Any]:
     return {"highlights": list_highlights(document_id)}
 
 
-@router.post("/api/documents/{document_id}/highlights")
+@router.post("/api/documents/{document_id}/highlights", tags=["Highlights"])
 async def api_create_highlight(document_id: str, request: Request) -> JSONResponse:
     _require_auth(request)
     if not get_document(document_id):
@@ -902,7 +970,7 @@ async def api_create_highlight(document_id: str, request: Request) -> JSONRespon
     return JSONResponse({"highlight": hl}, status_code=201)
 
 
-@router.patch("/api/highlights/{highlight_id}")
+@router.patch("/api/highlights/{highlight_id}", tags=["Highlights"])
 async def api_patch_highlight(highlight_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     if not get_highlight(highlight_id):
@@ -917,7 +985,7 @@ async def api_patch_highlight(highlight_id: str, request: Request) -> Dict[str, 
     return {"highlight": hl}
 
 
-@router.delete("/api/highlights/{highlight_id}")
+@router.delete("/api/highlights/{highlight_id}", tags=["Highlights"])
 def api_delete_highlight(request: Request, highlight_id: str) -> Dict[str, Any]:
     _require_auth(request)
     if not delete_highlight(highlight_id):
@@ -931,7 +999,7 @@ def api_delete_highlight(request: Request, highlight_id: str) -> Dict[str, Any]:
 # Pomodoro work phase runs) and reports its cumulative value; the server stores the max it sees.
 
 
-@router.post("/api/documents/{document_id}/sessions")
+@router.post("/api/documents/{document_id}/sessions", tags=["Study Sessions"])
 async def api_start_session(document_id: str, request: Request) -> JSONResponse:
     _require_auth(request)
     payload = await _json_body(request)
@@ -943,7 +1011,7 @@ async def api_start_session(document_id: str, request: Request) -> JSONResponse:
     return JSONResponse({"session": session}, status_code=201)
 
 
-@router.post("/api/sessions/{session_id}/beat")
+@router.post("/api/sessions/{session_id}/beat", tags=["Study Sessions"])
 async def api_beat_session(session_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     payload = await _json_body(request)
@@ -953,7 +1021,7 @@ async def api_beat_session(session_id: str, request: Request) -> Dict[str, Any]:
     return {"session": session}
 
 
-@router.post("/api/sessions/{session_id}/stop")
+@router.post("/api/sessions/{session_id}/stop", tags=["Study Sessions"])
 async def api_stop_session(session_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     payload = await _json_body(request)
@@ -966,14 +1034,14 @@ async def api_stop_session(session_id: str, request: Request) -> Dict[str, Any]:
 # ── workspace scratch dir (files the AI read/wrote under WORK_DIR; shown in the side tab) ──
 
 
-@router.get("/api/workspace/files")
+@router.get("/api/workspace/files", tags=["Workspace Files"])
 def api_workspace_files(request: Request, node_id: str = "") -> Dict[str, Any]:
     _require_auth(request)
     node_id = (node_id or "").strip() or None
     return {"root": str(WORK_DIR), "files": workspace_files_for_node(node_id)}
 
 
-@router.get("/api/workspace/content")
+@router.get("/api/workspace/content", tags=["Workspace Files"])
 def api_workspace_content(request: Request, path: str = "") -> Dict[str, Any]:
     _require_auth(request)
     try:
@@ -996,7 +1064,7 @@ def api_workspace_content(request: Request, path: str = "") -> Dict[str, Any]:
     return {"file": public_workspace_file(resolved), "content": text, "truncated": truncated}
 
 
-@router.get("/api/workspace/file")
+@router.get("/api/workspace/file", tags=["Workspace Files"])
 def api_workspace_file(request: Request, path: str = "", download: str = "") -> Any:
     _require_auth(request)
     try:
@@ -1017,7 +1085,7 @@ def api_workspace_file(request: Request, path: str = "", download: str = "") -> 
 # ── notes / nodes ─────────────────────────────────────────────────────────
 
 
-@router.patch("/api/nodes/{node_id}/note")
+@router.patch("/api/nodes/{node_id}/note", tags=["Notes"])
 async def api_patch_node_note(node_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     if not get_node(node_id):
@@ -1030,7 +1098,7 @@ async def api_patch_node_note(node_id: str, request: Request) -> Dict[str, Any]:
     return {"node": get_node(node_id)}
 
 
-@router.post("/api/nodes/{node_id}/note/append")
+@router.post("/api/nodes/{node_id}/note/append", tags=["Notes"])
 async def api_append_node_note(node_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     if not get_node(node_id):
@@ -1058,14 +1126,14 @@ def _require_note_target(kind: str, target_id: str) -> None:
         raise HTTPException(status_code=404, detail=f"{kind.capitalize()} does not exist")
 
 
-@router.get("/api/notes/{kind}/{target_id}")
+@router.get("/api/notes/{kind}/{target_id}", tags=["Notes"])
 def api_get_note(request: Request, kind: str, target_id: str) -> Dict[str, Any]:
     _require_auth(request)
     _require_note_target(kind, target_id)
     return {"note": notes.get_note(kind, target_id)}
 
 
-@router.put("/api/notes/{kind}/{target_id}")
+@router.put("/api/notes/{kind}/{target_id}", tags=["Notes"])
 async def api_put_note(kind: str, target_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     _require_note_target(kind, target_id)
@@ -1076,14 +1144,14 @@ async def api_put_note(kind: str, target_id: str, request: Request) -> Dict[str,
     return {"note": notes.set_note(kind, target_id, md)}
 
 
-@router.delete("/api/notes/{kind}/{target_id}")
+@router.delete("/api/notes/{kind}/{target_id}", tags=["Notes"])
 def api_delete_note(request: Request, kind: str, target_id: str) -> Dict[str, Any]:
     _require_auth(request)
     _require_note_target(kind, target_id)
     return {"deleted": notes.delete_note(kind, target_id)}
 
 
-@router.get("/api/projects/{project_id}/notes")
+@router.get("/api/projects/{project_id}/notes", tags=["Notes"])
 def api_project_notes(request: Request, project_id: str) -> Dict[str, Any]:
     _require_auth(request)
     project = get_node(project_id)
@@ -1103,7 +1171,7 @@ def api_project_notes(request: Request, project_id: str) -> Dict[str, Any]:
     return {"project": {"id": project["id"], "title": project.get("title") or "Project"}, "notes": notes}
 
 
-@router.get("/api/documents/{document_id}/notes")
+@router.get("/api/documents/{document_id}/notes", tags=["Notes"])
 def api_document_notes(request: Request, document_id: str) -> Dict[str, Any]:
     """Every marked part of a PDF — node notes, highlight notes, and the bare highlights
     with no note yet — each carrying the highlight it anchors to (a node note anchors to
@@ -1182,7 +1250,7 @@ def api_document_notes(request: Request, document_id: str) -> Dict[str, Any]:
     }
 
 
-@router.patch("/api/nodes/{node_id}")
+@router.patch("/api/nodes/{node_id}", tags=["Questions"])
 async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
     _require_auth(request)
     if not get_node(node_id):
@@ -1201,7 +1269,7 @@ async def api_patch_node(node_id: str, request: Request) -> Dict[str, Any]:
     return {"node": get_node(node_id)}
 
 
-@router.delete("/api/nodes/{node_id}")
+@router.delete("/api/nodes/{node_id}", tags=["Questions"])
 def api_delete_node(request: Request, node_id: str) -> Dict[str, Any]:
     _require_auth(request)
     node = get_node(node_id)
@@ -1285,7 +1353,7 @@ def api_delete_node(request: Request, node_id: str) -> Dict[str, Any]:
     return {"deleted": deleted_count, "parent_id": node.get("parent_id")}
 
 
-@router.get("/api/export/{node_id}")
+@router.get("/api/export/{node_id}", tags=["Import & Export"])
 def api_export(request: Request, node_id: str) -> Response:
     _require_auth(request)
     try:

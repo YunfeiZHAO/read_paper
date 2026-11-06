@@ -76,6 +76,19 @@
             <input id="homeImportInput" type="file" accept=".zip,application/zip" hidden />
           </div>
           <div id="homeGrid" class="home-grid"></div>
+          <section id="uploadedInbox" class="home-section uploaded-inbox" aria-labelledby="uploadedTitle">
+            <div class="home-section-head">
+              <h2 id="uploadedTitle" class="home-section-title">Uploaded</h2>
+              <span id="uploadedCount" class="home-section-count">0</span>
+              <button id="uploadedChooseBtn" class="ws-btn" type="button">Choose PDFs</button>
+              <input id="uploadedInput" type="file" accept="application/pdf,.pdf" multiple hidden />
+            </div>
+            <p class="screen-sub">Drop local PDFs here, then drag them onto a workspace or use Move to...</p>
+            <div id="uploadedStatus" role="status" aria-live="polite"></div>
+            <progress id="uploadedProgress" max="100" value="0" hidden aria-label="PDF upload progress"></progress>
+            <ul id="uploadedResults" class="uploaded-results" aria-live="polite"></ul>
+            <div id="uploadedGrid" class="doc-grid"></div>
+          </section>
         </section>
 
         <!-- ── Workspace detail: its PDFs + shared files ───────────── -->
@@ -341,6 +354,7 @@
           <div id="appDialogTitle" class="app-dialog-title"></div>
           <div id="appDialogBody" class="app-dialog-body" hidden></div>
           <input id="appDialogInput" type="text" class="app-dialog-input" autocomplete="off">
+          <select id="appDialogSelect" class="app-dialog-input" aria-label="Destination workspace" hidden></select>
           <div class="app-dialog-actions">
             <button id="appDialogCancel" type="button" class="app-dialog-btn" data-dialog-cancel>Cancel</button>
             <button id="appDialogOk" type="button" class="app-dialog-btn primary">OK</button>

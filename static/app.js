@@ -44,6 +44,8 @@ const state = {
   allFiles: [], // all files from /api/tree (state.files is the subset for the current workspace)
   // ── PDF / documents ──
   documents: [],
+  uploadedDocuments: [],
+  uploadingToInbox: false,
   currentDocId: localStorage.getItem("currentDocId") || null,
   pdfDoc: null,
   pdfScale: Number(localStorage.getItem("pdfScale")) || 1.3,
@@ -203,6 +205,14 @@ const els = {
   wsSettingsClearKey: document.getElementById("wsSettingsClearKey"),
   documentSelect: document.getElementById("documentSelect"),
   docUploadInput: document.getElementById("docUploadInput"),
+  uploadedInbox: document.getElementById("uploadedInbox"),
+  uploadedGrid: document.getElementById("uploadedGrid"),
+  uploadedCount: document.getElementById("uploadedCount"),
+  uploadedChooseBtn: document.getElementById("uploadedChooseBtn"),
+  uploadedInput: document.getElementById("uploadedInput"),
+  uploadedStatus: document.getElementById("uploadedStatus"),
+  uploadedProgress: document.getElementById("uploadedProgress"),
+  uploadedResults: document.getElementById("uploadedResults"),
   docDeleteBtn: document.getElementById("docDeleteBtn"),
   pdfPane: document.getElementById("pdfPane"),
   pdfResizeHandle: document.getElementById("pdfResizeHandle"),
@@ -280,21 +290,33 @@ function formatTokens(value) {
 
 let _dialogResolve = null;
 
-function _openDialog({ title = "", body = "", inputValue = "", isConfirm = false } = {}) {
+function _openDialog({ title = "", body = "", inputValue = "", isConfirm = false, options = null } = {}) {
   const el = document.getElementById("appDialog");
   const titleEl = document.getElementById("appDialogTitle");
   const bodyEl = document.getElementById("appDialogBody");
   const inputEl = document.getElementById("appDialogInput");
+  const selectEl = document.getElementById("appDialogSelect");
   if (!el) return Promise.resolve(isConfirm ? false : null);
 
   titleEl.textContent = title;
   bodyEl.textContent = body;
   bodyEl.hidden = !body;
-  inputEl.hidden = isConfirm;
+  inputEl.hidden = isConfirm || options !== null;
   inputEl.value = inputValue;
+  selectEl.hidden = options === null;
+  selectEl.replaceChildren();
+  if (options) {
+    for (const { value, label } of options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      selectEl.append(option);
+    }
+  }
   el.hidden = false;
   requestAnimationFrame(() => {
-    if (!isConfirm) { inputEl.focus(); inputEl.select(); }
+    if (options) selectEl.focus();
+    else if (!isConfirm) { inputEl.focus(); inputEl.select(); }
     else document.getElementById("appDialogOk")?.focus();
   });
   return new Promise((resolve) => { _dialogResolve = resolve; });
@@ -558,16 +580,9 @@ async function fetchWorkspaces() {
     state.workspaces = [];
     state.workspaceCategories = [];
   }
-  // Validate the current workspace: fall back to the first one, or create a default if none exist.
+  // Null is a valid workspace while reading an Uploaded PDF.
   if (state.currentWorkspaceId && !state.workspaces.some((w) => w.id === state.currentWorkspaceId)) {
     state.currentWorkspaceId = null;
-  }
-  if (!state.currentWorkspaceId && state.workspaces.length) {
-    state.currentWorkspaceId = state.workspaces[0].id;
-  }
-  if (!state.workspaces.length) {
-    const created = await createWorkspace("My workspace", { silent: true });
-    if (created) state.currentWorkspaceId = created.id;
   }
   if (state.currentWorkspaceId) localStorage.setItem("currentWorkspaceId", state.currentWorkspaceId);
   else localStorage.removeItem("currentWorkspaceId");
@@ -600,6 +615,9 @@ async function createWorkspace(title, { silent = false } = {}) {
 function parseRoute() {
   const raw = (location.hash || "").replace(/^#/, "");
   const parts = raw.split("/").filter(Boolean); // ["w","<id>","d","<docId>"]
+  if (parts[0] === "uploaded" && parts[1]) {
+    return { view: "reader", wsId: null, docId: parts[1] };
+  }
   if (parts[0] === "w" && parts[1]) {
     if (parts[2] === "d" && parts[3]) return { view: "reader", wsId: parts[1], docId: parts[3] };
     return { view: "workspace", wsId: parts[1] };
@@ -610,6 +628,7 @@ function parseRoute() {
 function routeHash(view, { wsId, docId } = {}) {
   if (view === "workspace" && wsId) return `#/w/${wsId}`;
   if (view === "reader" && wsId && docId) return `#/w/${wsId}/d/${docId}`;
+  if (view === "reader" && docId) return `#/uploaded/${docId}`;
   return "#/";
 }
 
@@ -632,7 +651,7 @@ async function applyRoute() {
   if (route.view !== "reader") ttStop().catch(console.error);
 
   if (route.view === "home") {
-    await fetchWorkspaces();
+    await Promise.all([fetchWorkspaces(), fetchUploadedDocuments()]);
     renderHome();
   } else if (route.view === "workspace") {
     await fetchWorkspaces();
@@ -642,11 +661,11 @@ async function applyRoute() {
     renderWorkspaceDetail();
   } else if (route.view === "reader") {
     await fetchWorkspaces();
-    if (!state.workspaces.some((w) => w.id === route.wsId)) return navigate("home");
+    if (route.wsId && !state.workspaces.some((w) => w.id === route.wsId)) return navigate("home");
     setCurrentWorkspace(route.wsId);
     await fetchDocuments();
     if (!state.documents.some((d) => d.id === route.docId)) {
-      return navigate("workspace", { wsId: route.wsId });
+      return navigate(route.wsId ? "workspace" : "home", { wsId: route.wsId });
     }
     await selectDocument(route.docId, { keepNode: false });
     pomoSyncTracker(); // if a Pomodoro work phase is running, attribute time as pomodoro
@@ -660,7 +679,8 @@ async function applyRoute() {
 function setCurrentWorkspace(wsId) {
   state.currentWorkspaceId = wsId;
   try {
-    localStorage.setItem("currentWorkspaceId", wsId);
+    if (wsId) localStorage.setItem("currentWorkspaceId", wsId);
+    else localStorage.removeItem("currentWorkspaceId");
   } catch {}
 }
 
@@ -703,13 +723,14 @@ function renderBreadcrumb() {
     add("Workspaces", { onClick: () => navigate("home") });
     add(ws ? ws.title || "Untitled" : "…", { current: true });
   } else if (state.view === "reader") {
-    const ws = currentWorkspace() || state.wsDetail.workspace;
+    const ws = currentWorkspace();
     const doc = currentDocument();
     add("Workspaces", { onClick: () => navigate("home") });
-    add(ws ? ws.title || "Untitled" : "…", {
-      onClick: () => navigate("workspace", { wsId: state.currentWorkspaceId }),
+    add(ws ? ws.title || "Untitled" : "Uploaded", {
+      onClick: () => navigate(ws ? "workspace" : "home", { wsId: state.currentWorkspaceId }),
     });
     add(doc ? compact(doc.title || doc.original_name || "Untitled", 42) : "…", { current: true });
+    if (doc) add("Move to...", { onClick: () => chooseDocumentWorkspace(doc).catch(showDocumentError) });
   }
   els.breadcrumb.replaceChildren(...crumbs);
 }
@@ -723,6 +744,25 @@ function buildWorkspaceCard(ws) {
   card.className = "ws-card u-" + urgencyLevelFromDate(ws.urgent_deadline, false);
   card.draggable = true;
   card.dataset.wsId = ws.id;
+  card.addEventListener("dragover", (e) => {
+    if (!state.dragDocId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    card.classList.add("document-drop-target");
+  });
+  card.addEventListener("dragleave", (e) => {
+    if (!card.contains(e.relatedTarget)) card.classList.remove("document-drop-target");
+  });
+  card.addEventListener("drop", (e) => {
+    if (!state.dragDocId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const docId = state.dragDocId;
+    state.dragDocId = null;
+    card.classList.remove("document-drop-target");
+    transferDocument(docId, ws.id).catch(showDocumentError);
+  });
 
   card.addEventListener("dragstart", (e) => {
     state.dragWsId = ws.id;
@@ -838,10 +878,11 @@ const WS_UNCATEGORIZED = "__ws_uncat__"; // sentinel section id for workspaces w
 
 function renderHome() {
   if (!els.homeGrid) return;
+  renderUploaded();
   if (!state.workspaces.length) {
     const empty = document.createElement("div");
     empty.className = "screen-empty";
-    empty.textContent = "No workspaces yet. Create one to start adding PDFs.";
+    empty.textContent = "No workspaces yet. Create one to organize your uploaded PDFs.";
     els.homeGrid.replaceChildren(empty);
     return;
   }
@@ -867,6 +908,130 @@ function renderHome() {
   );
 
   els.homeGrid.replaceChildren(...sections);
+}
+
+async function fetchUploadedDocuments() {
+  const res = await fetch("/api/documents?unassigned=true");
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "Could not load Uploaded PDFs");
+  state.uploadedDocuments = data.documents;
+}
+
+function renderUploaded() {
+  els.uploadedCount.textContent = String(state.uploadedDocuments.length);
+  els.uploadedGrid.replaceChildren(...state.uploadedDocuments.map(buildDocCard));
+  if (!state.uploadedDocuments.length) {
+    const empty = document.createElement("div");
+    empty.className = "screen-empty";
+    empty.textContent = "No unassigned PDFs. Drop PDFs here or choose files to upload.";
+    els.uploadedGrid.append(empty);
+  }
+}
+
+function showDocumentError(err) {
+  console.error(err);
+  window.alert(err.message);
+}
+
+async function transferDocument(docId, workspaceId) {
+  const res = await fetch(`/api/documents/${docId}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace_id: workspaceId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "Could not move PDF");
+  if (state.view === "reader" && state.currentDocId === docId) {
+    navigate("reader", { wsId: data.document.workspace_id, docId });
+  } else {
+    await applyRoute();
+  }
+}
+
+async function chooseDocumentWorkspace(doc) {
+  await fetchWorkspaces();
+  const options = state.workspaces
+    .filter((ws) => ws.id !== doc.workspace_id)
+    .map((ws) => ({ value: ws.id, label: ws.title }));
+  if (doc.workspace_id) options.unshift({ value: "", label: "Uploaded (no workspace)" });
+  if (!options.length) {
+    window.alert("Create a workspace on the dashboard before moving this PDF.");
+    return;
+  }
+  const destination = await _openDialog({
+    title: "Move PDF",
+    body: doc.title || doc.original_name,
+    options,
+  });
+  if (typeof destination !== "string") return;
+  await transferDocument(doc.id, destination || null);
+}
+
+async function uploadToInbox(fileList) {
+  if (state.uploadingToInbox) {
+    window.alert("An upload is already in progress. Please wait before adding more files.");
+    return;
+  }
+  const files = Array.from(fileList);
+  if (!files.length) return;
+  state.uploadingToInbox = true;
+  els.uploadedChooseBtn.disabled = true;
+  els.uploadedInbox.setAttribute("aria-busy", "true");
+  els.uploadedResults.replaceChildren();
+  try {
+    for (const [index, file] of files.entries()) {
+      const result = document.createElement("li");
+      els.uploadedResults.append(result);
+      els.uploadedStatus.textContent = `Uploading ${index + 1}/${files.length}: ${file.name}`;
+      els.uploadedProgress.value = 0;
+      els.uploadedProgress.hidden = false;
+      try {
+        if (!/\.pdf$/i.test(file.name)) throw new Error("Only PDF files can be uploaded");
+        const form = new FormData();
+        form.append("files", file);
+        const data = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/batch-upload");
+          xhr.responseType = "json";
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) els.uploadedProgress.value = (e.loaded / e.total) * 100;
+          };
+          xhr.onload = () => {
+            if (xhr.status < 200 || xhr.status >= 300) {
+              reject(new Error(xhr.response?.detail || `Upload failed (HTTP ${xhr.status})`));
+            } else if (!Array.isArray(xhr.response?.results)) {
+              reject(new Error("Invalid upload response"));
+            } else {
+              resolve(xhr.response);
+            }
+          };
+          xhr.onerror = () => reject(new Error("Upload failed: network error"));
+          xhr.onabort = () => reject(new Error("Upload cancelled"));
+          xhr.send(form);
+        });
+        const uploaded = data.results[0];
+        if (!uploaded || uploaded.status === "failed") {
+          throw new Error(uploaded?.error || "No upload result received");
+        }
+        result.textContent = `${file.name}: ${uploaded.status === "already_exists" ? "already in Uploaded" : "uploaded"}`;
+      } catch (err) {
+        console.error(err);
+        result.className = "upload-error";
+        result.textContent = `${file.name}: ${err.message}`;
+      }
+    }
+    await fetchUploadedDocuments();
+    renderUploaded();
+    els.uploadedStatus.textContent = "Uploads finished. See per-file results below.";
+  } catch (err) {
+    console.error(err);
+    els.uploadedStatus.textContent = `Could not refresh Uploaded: ${err.message}`;
+  } finally {
+    state.uploadingToInbox = false;
+    els.uploadedChooseBtn.disabled = false;
+    els.uploadedProgress.hidden = true;
+    els.uploadedInbox.removeAttribute("aria-busy");
+  }
 }
 
 function buildHomeSection(sectionId, title, workspaces, category) {
@@ -1333,13 +1498,16 @@ function buildDocCard(doc) {
     state.dragDocId = null;
     card.classList.remove("dragging");
     clearDropMarkers();
+    document.querySelectorAll(".document-drop-target").forEach((el) =>
+      el.classList.remove("document-drop-target")
+    );
   });
 
   const body = document.createElement("button");
   body.type = "button";
   body.className = "doc-card-body";
   body.addEventListener("click", () =>
-    navigate("reader", { wsId: state.currentWorkspaceId, docId: doc.id })
+    navigate("reader", { wsId: doc.workspace_id, docId: doc.id })
   );
 
   const t = document.createElement("div");
@@ -1386,6 +1554,15 @@ function buildDocCard(doc) {
   });
 
   buttons.append(download, rename, del);
+  const move = document.createElement("button");
+  move.type = "button";
+  move.className = "ws-btn doc-move-btn";
+  move.textContent = "Move to...";
+  move.title = "Move PDF to another workspace or Uploaded";
+  move.addEventListener("click", (e) => {
+    e.stopPropagation();
+    chooseDocumentWorkspace(doc).catch(showDocumentError);
+  });
 
   // Study-schedule row: a "studied" toggle, a deadline date input, and a small
   // status chip. Everything here stops propagation so clicks don't open the reader.
@@ -1429,7 +1606,7 @@ function buildDocCard(doc) {
     sched.append(chip);
   }
 
-  card.append(body, buttons, sched);
+  card.append(body, buttons, move, sched);
   return card;
 }
 
@@ -1442,7 +1619,8 @@ async function setDocSchedule(doc, patch) {
     body: JSON.stringify(patch),
   });
   if (!res.ok) {
-    console.error("Failed to update schedule", await res.text());
+    const data = await res.json();
+    showDocumentError(new Error(data.detail || "Failed to update schedule"));
     return;
   }
   const data = await res.json();
@@ -1450,7 +1628,12 @@ async function setDocSchedule(doc, patch) {
   const list = state.wsDetail.documents || [];
   const idx = list.findIndex((d) => d.id === doc.id);
   if (idx >= 0) list[idx] = updated || { ...list[idx], ...patch };
-  renderWorkspaceDetail();
+  if (state.view === "home") {
+    await fetchUploadedDocuments();
+    renderUploaded();
+  } else {
+    renderWorkspaceDetail();
+  }
 }
 
 function clearDropMarkers() {
@@ -1800,9 +1983,7 @@ async function renameDocument(doc) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || data.error || "Rename failed");
     }
-    await fetchWorkspaces();
-    if (state.currentWorkspaceId) await fetchWorkspaceDetail(state.currentWorkspaceId);
-    renderWorkspaceDetail();
+    await applyRoute();
   } catch (err) {
     window.alert(err.message);
   }
@@ -1849,9 +2030,7 @@ async function deleteDocument(doc) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || data.error || "Delete failed");
     }
-    await fetchWorkspaces();
-    if (state.currentWorkspaceId) await fetchWorkspaceDetail(state.currentWorkspaceId);
-    renderWorkspaceDetail();
+    await applyRoute();
   } catch (err) {
     window.alert(err.message);
   }
@@ -1860,7 +2039,7 @@ async function deleteDocument(doc) {
 async function fetchDocuments() {
   const wsId = state.currentWorkspaceId;
   try {
-    const url = wsId ? `/api/documents?workspace_id=${encodeURIComponent(wsId)}` : "/api/documents";
+    const url = wsId ? `/api/documents?workspace_id=${encodeURIComponent(wsId)}` : "/api/documents?unassigned=true";
     const res = await fetch(url);
     const data = await res.json();
     state.documents = data.documents || [];
@@ -1890,12 +2069,11 @@ async function fetchTree({ keepSelection = true } = {}) {
   const res = await fetch("/api/tree");
   const data = await res.json();
   state.allNodes = data.nodes || [];
-  // Filter files by the current workspace: state.files holds only this workspace's uploads,
-  // while state.allFiles keeps the full set. Unowned legacy files (null workspace_id) join none.
+  // Uploaded documents use the unassigned file scope, not every workspace's files.
   state.allFiles = data.files || [];
   state.files = state.currentWorkspaceId
     ? state.allFiles.filter((f) => f.workspace_id === state.currentWorkspaceId)
-    : state.allFiles;
+    : state.allFiles.filter((f) => !f.workspace_id);
   state.workDir = data.work_dir || "";
   state.nodes = nodesForDocument(state.currentDocId);
   rebuildIndexes();
@@ -4962,9 +5140,17 @@ function wireEvents() {
   const appDialogEl = document.getElementById("appDialog");
   const appDialogOk = document.getElementById("appDialogOk");
   const appDialogInput = document.getElementById("appDialogInput");
+  const appDialogSelect = document.getElementById("appDialogSelect");
   if (appDialogOk) appDialogOk.addEventListener("click", () => {
     const inputEl = document.getElementById("appDialogInput");
-    _closeDialog(inputEl && !inputEl.hidden ? inputEl.value : true);
+    _closeDialog(!appDialogSelect.hidden ? appDialogSelect.value :
+      inputEl && !inputEl.hidden ? inputEl.value : true);
+  });
+  appDialogSelect.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      _closeDialog(appDialogSelect.value);
+    }
   });
   if (appDialogInput) appDialogInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -5037,6 +5223,34 @@ function wireEvents() {
     });
   }
   if (els.wsAddPdfBtn) els.wsAddPdfBtn.addEventListener("click", () => els.docUploadInput.click());
+  els.uploadedChooseBtn.addEventListener("click", () => els.uploadedInput.click());
+  els.uploadedInput.addEventListener("change", () => {
+    const files = Array.from(els.uploadedInput.files);
+    els.uploadedInput.value = "";
+    uploadToInbox(files).catch(showDocumentError);
+  });
+  els.uploadedInbox.addEventListener("dragover", (e) => {
+    if (!Array.from(e.dataTransfer.types).includes("Files") && !state.dragDocId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = state.dragDocId ? "move" : "copy";
+    els.uploadedInbox.classList.add("document-drop-target");
+  });
+  els.uploadedInbox.addEventListener("dragleave", (e) => {
+    if (!els.uploadedInbox.contains(e.relatedTarget)) {
+      els.uploadedInbox.classList.remove("document-drop-target");
+    }
+  });
+  els.uploadedInbox.addEventListener("drop", (e) => {
+    e.preventDefault();
+    els.uploadedInbox.classList.remove("document-drop-target");
+    if (e.dataTransfer.files.length) {
+      uploadToInbox(e.dataTransfer.files).catch(showDocumentError);
+    } else if (state.dragDocId) {
+      const docId = state.dragDocId;
+      state.dragDocId = null;
+      transferDocument(docId, null).catch(showDocumentError);
+    }
+  });
   if (els.wsAddCategoryBtn)
     els.wsAddCategoryBtn.addEventListener("click", () => createCategory().catch(console.error));
   if (els.wsSettingsFold) {
@@ -6163,5 +6377,3 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupApp();
   }
 });
-
-

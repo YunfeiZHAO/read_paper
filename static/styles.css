@@ -3054,6 +3054,19 @@ button.crumb:hover { color: var(--accent); text-decoration: underline; }
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--panel));
 }
+.document-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: 3px;
+}
+.uploaded-inbox { margin-bottom: 24px; }
+.uploaded-inbox .home-section-title { margin: 0; }
+.uploaded-inbox .screen-sub { margin-top: 12px; }
+.uploaded-inbox progress { width: 100%; margin-top: 8px; }
+.uploaded-results { padding-left: 20px; font-size: 13px; }
+.upload-error { color: var(--red); }
+.doc-move-btn { align-self: flex-start; margin: 0 16px 8px; }
+.doc-card:focus-within .doc-card-buttons,
+.ws-card:focus-within .ws-card-actions { opacity: 1; }
 .home-section-head {
   display: flex;
   align-items: center;

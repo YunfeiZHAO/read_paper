@@ -21,6 +21,11 @@ Backends are pluggable: the **Claude API** (default) or the **Codex CLI**.
   self-contained without a literal chat-history API.
 - **Workspaces** — a top-level project groups a set of PDFs and their shared files. Navigation
   is home (workspace cards) → workspace (PDF list) → reader.
+- **Uploaded inbox** — drop local PDFs onto the dashboard's Uploaded block or use
+  **Choose PDFs**. Open them directly, drag them onto workspace cards, or use
+  **Move to...** on any PDF (also in the reader) to change workspace or return to Uploaded.
+  Moves preserve highlights, questions, notes, and study history, reset the document's
+  column to Uncategorized, and reject destination filename conflicts.
 - **Notes** — a freeform Markdown note per node, plus workspace- and document-level notes.
 - **Time tracking & Pomodoro** — automatic reading-time tracking per paper (rolled up per
   workspace) plus a built-in Pomodoro focus timer. See [Time tracking & Pomodoro](#time-tracking--pomodoro).
@@ -84,6 +89,31 @@ uv run python app.py    # serves on http://127.0.0.1:8080 (0.0.0.0 — reachable
 The `tools` extra is optional convenience: it pre-installs PDF/image/web libraries the backend's
 `bash` tool often reaches for (PyMuPDF, pdfplumber, pypdf, Pillow, requests, beautifulsoup4, lxml)
 so runs don't pause to install them on the fly. The app never imports them itself.
+
+## Import PDFs through the API
+
+In Swagger (`/docs`), use `POST /api/batch-upload` and select PDFs in the `files`
+picker. Uploads are binary multipart data, not Base64. Only the canonical `files`
+field is shown; the legacy `file` alias remains accepted by existing clients.
+
+```bash
+curl 'http://127.0.0.1:8080/api/batch-upload' \
+  -F 'files=@paper.pdf;type=application/pdf' \
+  -F 'on_conflict=skip'
+```
+
+Repeat `-F 'files=@another.pdf;type=application/pdf'` for multiple PDFs. Optionally
+send `workspace_id` or `workspace_name` and `category_id`. If neither workspace
+field is provided, PDFs go into the dashboard's **Uploaded** inbox without creating
+a workspace. Repeated uploads still honor `on_conflict` within that inbox.
+Existing workspaces are not changed. Non-PDF filenames or missing PDF headers return
+per-file errors. With authentication enabled, include the bearer token obtained from `/api/auth/login`.
+The response uses HTTP 207 with per-file results.
+
+`GET /api/documents?unassigned=true` lists only inbox documents (not question
+attachments). `POST /api/documents/{id}/move` with JSON `{"workspace_id":"<id>"}`
+moves a PDF; use `{"workspace_id":null}` to return it to Uploaded. A destination
+filename conflict returns HTTP 409 without moving the document.
 
 ## Deploy with Docker Compose / Dokploy
 
