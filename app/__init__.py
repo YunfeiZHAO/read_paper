@@ -86,6 +86,9 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="PDF Tree QA",
         openapi_tags=openapi_tags,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     allowed_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS", "")

@@ -92,9 +92,11 @@ so runs don't pause to install them on the fly. The app never imports them itsel
 
 ## Import PDFs through the API
 
-In Swagger (`/docs`), use `POST /api/batch-upload` and select PDFs in the `files`
-picker. Uploads are binary multipart data, not Base64. Only the canonical `files`
-field is shown; the legacy `file` alias remains accepted by existing clients.
+Swagger (`/docs`), ReDoc (`/redoc`), and the public OpenAPI schema (`/openapi.json`)
+are disabled. API endpoints remain available.
+
+Use `POST /api/batch-upload` with binary multipart uploads in the `files` field,
+not Base64. The legacy `file` alias remains accepted by existing clients.
 
 ```bash
 curl 'http://127.0.0.1:8080/api/batch-upload' \

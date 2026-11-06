@@ -2,7 +2,7 @@ import pytest
 
 
 def test_upload_fields_are_rendered_as_file_inputs(client):
-    schema = client.get("/openapi.json").json()
+    schema = client.app.openapi()
     assert schema["openapi"] == "3.0.3"
 
     upload = schema["paths"]["/api/upload"]["post"]
@@ -34,6 +34,11 @@ def test_upload_fields_are_rendered_as_file_inputs(client):
             upload_schema = field_schema.get("items", field_schema)
             assert upload_schema["type"] == "string"
             assert upload_schema["format"] == "binary"
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_api_documentation_is_disabled(client, path):
+    assert client.get(path).status_code == 404
 
 
 @pytest.mark.parametrize("path", ["/api/upload", "/api/batch-upload"])
