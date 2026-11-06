@@ -1004,6 +1004,20 @@ def get_document(document_id: str) -> Optional[Dict[str, Any]]:
     return public_document(row) if row else None
 
 
+def get_document_by_filename(original_name: str, workspace_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Look up a document by its original filename within a workspace (or at the top level).
+
+    Used by the batch-upload endpoint to make re-uploads idempotent: same filename in the
+    same workspace returns the existing document instead of creating a duplicate.
+    """
+    with DB_LOCK, db_connection() as conn:
+        row = conn.execute(
+            f"{_DOC_SELECT} WHERE d.original_name = ? AND d.workspace_id IS ?",
+            (original_name, workspace_id),
+        ).fetchone()
+    return public_document(row) if row else None
+
+
 def list_documents(workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
     with DB_LOCK, db_connection() as conn:
         if workspace_id:

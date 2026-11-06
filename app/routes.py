@@ -19,6 +19,7 @@ from .config import (
     BACKENDS,
     BASE_DIR,
     ENABLE_WEB_SEARCH,
+    UPLOAD_API_KEY,
     WORKSPACE_TEXT_PREVIEW_BYTES,
     WORK_DIR,
 )
@@ -29,6 +30,7 @@ from .db import (
     create_document,
     create_highlight,
     create_node,
+    get_document_by_filename,
     create_study_session,
     create_workspace,
     create_workspace_category,
@@ -99,14 +101,33 @@ def _require_auth(request: Request) -> None:
     """Check if authentication is enabled and verify the session token."""
     if not AUTH_ENABLED:
         return
-    
+
     auth_token = request.cookies.get("auth_token")
     if not auth_token:
         raise HTTPException(status_code=401, detail="Authentication required")
-    
+
     email = verify_session_token(auth_token)
     if not email:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+
+def _require_upload_auth(request: Request) -> None:
+    """Auth for the batch-upload endpoint: accepts a Bearer token (READPAPER_UPLOAD_API_KEY)
+    or falls back to the standard session-cookie check.
+
+    This lets agents and scripts call the endpoint without a browser session while
+    still requiring authentication when AUTH_ENABLED is set.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[len("Bearer "):].strip()
+        if UPLOAD_API_KEY and token == UPLOAD_API_KEY:
+            return
+        # A Bearer token was supplied but didn't match — always reject, even if
+        # cookie auth would have passed, so callers aren't silently downgraded.
+        raise HTTPException(status_code=401, detail="Invalid upload API key")
+    # No Bearer token: fall back to cookie-based session auth.
+    _require_auth(request)
 
 
 # ── Authentication endpoints ────────────────────────────────────────────
@@ -383,6 +404,95 @@ async def api_upload(
         data = await item.read()
         saved_files.append(store_upload(item.filename, data, item.content_type, workspace_id=workspace_id))
     return JSONResponse({"files": saved_files}, status_code=201)
+
+
+@router.post("/api/batch-upload")
+async def api_batch_upload(
+    request: Request,
+    files: Optional[List[UploadFile]] = File(None),
+    file: Optional[List[UploadFile]] = File(None),
+    workspace_id: str = Form(""),
+    workspace_name: str = Form(""),
+    category_id: str = Form(""),
+    on_conflict: str = Form("skip"),
+) -> JSONResponse:
+    """Batch-upload PDFs, using the filename as a natural key within the workspace.
+
+    Auth: accepts ``Authorization: Bearer <READPAPER_UPLOAD_API_KEY>`` so agents and
+    scripts can call this without a browser session. Falls back to the standard
+    session-cookie check when no Bearer token is present.
+
+    ``on_conflict`` controls what happens when a document with the same filename already
+    exists in the target workspace:
+      - ``skip``    (default) — return the existing document, do not re-upload.
+      - ``replace`` — overwrite the stored file and update the document record.
+
+    Returns a list of per-file results, each with ``status`` set to one of
+    ``created``, ``already_exists``, or ``failed``.
+    """
+    _require_upload_auth(request)
+
+    uploaded = files or file or []
+    if not uploaded:
+        raise HTTPException(status_code=400, detail="No file received")
+
+    if on_conflict not in {"skip", "replace"}:
+        raise HTTPException(status_code=400, detail="on_conflict must be 'skip' or 'replace'")
+
+    workspace_id = (workspace_id or "").strip() or None
+    workspace_name = (workspace_name or "").strip()
+    category_id = (category_id or "").strip() or None
+
+    # Resolve workspace by name when only the name (not the ID) is given.
+    if not workspace_id and workspace_name:
+        with DB_LOCK, db_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM workspaces WHERE title = ? AND archived = 0 LIMIT 1",
+                (workspace_name,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=400, detail=f"Workspace '{workspace_name}' not found")
+        workspace_id = row["id"]
+
+    if workspace_id and not get_workspace(workspace_id):
+        raise HTTPException(status_code=400, detail="Workspace does not exist")
+    if category_id and not get_category(category_id):
+        raise HTTPException(status_code=400, detail="Category does not exist")
+
+    results = []
+    for item in uploaded:
+        if not item.filename:
+            continue
+        filename = item.filename
+        try:
+            existing = get_document_by_filename(filename, workspace_id)
+            if existing and on_conflict == "skip":
+                results.append({"filename": filename, "status": "already_exists", "document": existing})
+                continue
+
+            data = await item.read()
+
+            if existing and on_conflict == "replace":
+                # Overwrite the underlying file and keep the same document row.
+                saved = store_upload(filename, data, item.content_type, workspace_id=workspace_id)
+                from .db import update_document as _update_doc
+                _update_doc(existing["id"], existing.get("title") or filename)
+                results.append({"filename": filename, "status": "replaced", "document": get_document_by_filename(filename, workspace_id)})
+            else:
+                saved = store_upload(filename, data, item.content_type, workspace_id=workspace_id)
+                doc = create_document(
+                    saved["id"],
+                    filename,
+                    filename,
+                    None,
+                    workspace_id=workspace_id,
+                    category_id=category_id,
+                )
+                results.append({"filename": filename, "status": "created", "document": doc})
+        except Exception as exc:
+            results.append({"filename": filename, "status": "failed", "error": str(exc)})
+
+    return JSONResponse({"results": results}, status_code=207)
 
 
 @router.get("/api/files/{file_id}/download")
