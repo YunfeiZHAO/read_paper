@@ -242,7 +242,6 @@
               <form id="composer" class="composer sidebar-composer">
                 <div class="composer-meta">
                   <div id="threadTarget" class="thread-target"></div>
-                  <div id="selectedFiles" class="selected-files"></div>
                   <div class="backend-toggle" aria-label="Answer backend">
                     <button data-backend="codex" type="button">Codex</button>
                     <button class="active" data-backend="claude" type="button">Claude</button>
@@ -263,6 +262,7 @@
                     <button data-web-search="on" type="button" title="Use the web_search tool to search the web">Web on</button>
                   </div>
                 </div>
+                <div id="selectedFiles" class="selected-files"></div>
                 <div class="composer-row">
                   <textarea id="promptInput" rows="3" placeholder="Type a question (you can select source text in the PDF first)"></textarea>
                   <button id="sendBtn" type="submit">Send</button>
