@@ -132,11 +132,6 @@ if auth_users_env:
 
 AUTH_ENABLED = bool(AUTH_USERS)
 
-# API key for the batch-upload endpoint: allows agents / external tools to upload
-# PDFs without a browser session. Set to a non-empty string to enable.
-# Example: READPAPER_UPLOAD_API_KEY=my-secret-key
-UPLOAD_API_KEY = os.environ.get("READPAPER_UPLOAD_API_KEY", "").strip()
-
 # Session secret for JWT token signing
 AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "").strip()
 if not AUTH_SECRET_KEY and AUTH_ENABLED:

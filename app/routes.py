@@ -19,7 +19,6 @@ from .config import (
     BACKENDS,
     BASE_DIR,
     ENABLE_WEB_SEARCH,
-    UPLOAD_API_KEY,
     WORKSPACE_TEXT_PREVIEW_BYTES,
     WORK_DIR,
 )
@@ -112,8 +111,8 @@ def _require_auth(request: Request) -> None:
 
 
 def _require_upload_auth(request: Request) -> None:
-    """Auth for the batch-upload endpoint: accepts a Bearer token (READPAPER_UPLOAD_API_KEY)
-    or falls back to the standard session-cookie check.
+    """Auth for the batch-upload endpoint: accepts a Bearer session JWT (obtained from
+    /api/auth/login) or falls back to the standard session-cookie check.
 
     This lets agents and scripts call the endpoint without a browser session while
     still requiring authentication when AUTH_ENABLED is set.
@@ -121,11 +120,10 @@ def _require_upload_auth(request: Request) -> None:
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[len("Bearer "):].strip()
-        if UPLOAD_API_KEY and token == UPLOAD_API_KEY:
+        email = verify_session_token(token)
+        if email:
             return
-        # A Bearer token was supplied but didn't match — always reject, even if
-        # cookie auth would have passed, so callers aren't silently downgraded.
-        raise HTTPException(status_code=401, detail="Invalid upload API key")
+        raise HTTPException(status_code=401, detail="Invalid or expired session token")
     # No Bearer token: fall back to cookie-based session auth.
     _require_auth(request)
 
@@ -155,7 +153,7 @@ async def api_auth_login(request: Request) -> JSONResponse:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     token = create_session_token(email)
-    response = JSONResponse({"message": "Login successful", "email": email}, status_code=200)
+    response = JSONResponse({"message": "Login successful", "email": email, "token": token}, status_code=200)
     # Detect HTTPS from the Forwarded/X-Forwarded-Proto headers Traefik/nginx set,
     # or from the request URL scheme. Use secure=True when on HTTPS so the cookie
     # is sent back by the browser; non-secure cookies are silently dropped over HTTPS.
@@ -418,8 +416,8 @@ async def api_batch_upload(
 ) -> JSONResponse:
     """Batch-upload PDFs, using the filename as a natural key within the workspace.
 
-    Auth: accepts ``Authorization: Bearer <READPAPER_UPLOAD_API_KEY>`` so agents and
-    scripts can call this without a browser session. Falls back to the standard
+    Auth: accepts ``Authorization: Bearer <session-JWT>`` (from ``/api/auth/login``) so
+    agents and scripts can call this without a browser session. Falls back to the standard
     session-cookie check when no Bearer token is present.
 
     ``on_conflict`` controls what happens when a document with the same filename already
