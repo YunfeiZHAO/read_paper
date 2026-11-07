@@ -68,6 +68,10 @@ const state = {
   paneOpen: loadPaneState(),
   selectedId: null,
   parentId: null,
+  // True when the user deliberately broke out to a fresh thread (root question).
+  // Distinguishes an intentional empty selection from "nothing picked yet", so a
+  // background poll won't snap the chat back to the root node. See fetchTree().
+  newThread: false,
   fileIds: new Set(),
   workspaceRefs: [],
   selectedBackend: ["codex", "claude", "local"].includes(localStorage.getItem("askBackend"))
@@ -2084,7 +2088,7 @@ async function fetchTree({ keepSelection = true } = {}) {
   if (state.parentId && !state.nodeById.has(state.parentId)) {
     state.parentId = state.selectedId;
   }
-  if (!state.selectedId && state.nodes.length) {
+  if (!state.selectedId && !state.newThread && state.nodes.length) {
     state.selectedId = state.nodes[0].id;
     state.parentId = state.selectedId;
   }
@@ -2117,6 +2121,7 @@ async function selectDocument(docId, { keepNode = false } = {}) {
   if (!keepNode) {
     state.selectedId = null;
     state.parentId = null;
+    state.newThread = false; // a fresh document should default-select its own root
   }
   state.pendingSelection = null;
   state.activeHighlightId = null;
@@ -2521,6 +2526,7 @@ function selectNode(id) {
   hideNodePromptPreview();
   hideNodeNotePreviewImmediate();
   state.noteHighlightId = null; // choosing a node exits highlight-note mode
+  state.newThread = false; // choosing a node exits new-thread mode
   state.selectedId = id;
   state.parentId = id;
   state.scrollConversationToNode = id; // jump to this node's question in the conversation
@@ -2530,6 +2536,7 @@ function selectNode(id) {
 }
 
 function setParent(id) {
+  if (id) state.newThread = false; // picking a parent means continuing, not a fresh thread
   state.parentId = id || null;
   state.selectedId = id || state.selectedId;
   renderComposer();
@@ -3327,6 +3334,7 @@ function renderThreadTarget() {
   newThread.addEventListener("click", () => {
     state.parentId = null;
     state.selectedId = null;
+    state.newThread = true;
     render();
     els.promptInput.focus();
   });
@@ -3847,6 +3855,7 @@ async function sendPrompt(event) {
     if (!res.ok) throw new Error(data.detail || data.error || "Send failed");
     state.selectedId = data.node.id;
     state.parentId = data.node.id;
+    state.newThread = false; // the new node is now the active selection
     state.pendingSelection = null;
     els.promptInput.value = "";
     state.scrollConversationToLatest = true;
@@ -4151,6 +4160,7 @@ async function deleteSelected() {
     state.selectedProjectId = "__new__";
     state.selectedId = null;
     state.parentId = null;
+    state.newThread = true; // nothing left to fall back to: land in a clean new-thread state
   }
   localStorage.setItem("selectedProjectId", state.selectedProjectId);
   await fetchTree();
