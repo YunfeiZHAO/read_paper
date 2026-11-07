@@ -2753,7 +2753,12 @@ function toolCallsForNode(node) {
   return [...calls.values()];
 }
 
-function renderToolCalls(tools, active = false) {
+// Remembers each node's Tools & reasoning disclosure open/closed state so a
+// background re-render (2.5s poll) or the running→done transition doesn't
+// discard it. Keyed by node id; seeded from `active` on first render.
+const toolDisclosureOpen = new Map();
+
+function renderToolCalls(tools, active = false, nodeId = null) {
   if (!tools.length) return null;
   const list = document.createElement("div");
   list.className = "tool-list";
@@ -2791,11 +2796,20 @@ function renderToolCalls(tools, active = false) {
     list.appendChild(row);
   }
   // Fold the tool/reasoning activity into a disclosure so the final answer
-  // stays the prominent message. Keep it open while the node is still running
-  // (so live tool activity is visible), collapsed once it has finished.
+  // stays the prominent message. Open by default while the node runs so live
+  // activity is visible; the per-node state map below keeps the user's choice.
   const details = document.createElement("details");
   details.className = "tool-disclosure";
-  if (active) details.open = true;
+  // Default open while running; otherwise honor the remembered choice so the
+  // panel survives re-renders and doesn't auto-close when the node finishes.
+  let open = active;
+  if (nodeId != null) {
+    const remembered = toolDisclosureOpen.get(nodeId);
+    if (remembered !== undefined) open = remembered;
+    else toolDisclosureOpen.set(nodeId, open);
+    details.addEventListener("toggle", () => toolDisclosureOpen.set(nodeId, details.open));
+  }
+  details.open = open;
   const summary = document.createElement("summary");
   summary.className = "tool-disclosure-summary";
   const running = tools.filter((t) => t.status !== "completed").length;
@@ -2863,7 +2877,7 @@ function makeBubble(role, text, meta = "", tools = [], active = false, attachmen
       label.appendChild(viewBtn);
     }
   }
-  const toolList = role === "agent" ? renderToolCalls(tools, active) : null;
+  const toolList = role === "agent" ? renderToolCalls(tools, active, node ? node.id : null) : null;
   bubble.appendChild(label);
   if (toolList) bubble.appendChild(toolList);
   if (role === "agent") {
