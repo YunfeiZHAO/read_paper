@@ -98,36 +98,30 @@ router = APIRouter()
 
 INDEX_HTML = BASE_DIR / "templates" / "index.html"
 
+def _session_token(request: Request) -> Optional[str]:
+    """The session JWT sent with this request, or None.
+
+    An ``Authorization: Bearer <jwt>`` header (native apps, agents, scripts) takes precedence
+    over the ``auth_token`` cookie (the browser frontend). Both carry the same token returned
+    by /api/auth/login.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if auth_header[:7].lower() == "bearer ":
+        return auth_header[7:].strip() or None
+    return request.cookies.get("auth_token") or None
+
+
 def _require_auth(request: Request) -> None:
-    """Check if authentication is enabled and verify the session token."""
+    """Raise 401 unless auth is disabled or the request carries a valid session token."""
     if not AUTH_ENABLED:
         return
 
-    auth_token = request.cookies.get("auth_token")
-    if not auth_token:
+    token = _session_token(request)
+    if not token:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    email = verify_session_token(auth_token)
-    if not email:
+    if not verify_session_token(token):
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-
-
-def _require_upload_auth(request: Request) -> None:
-    """Auth for the batch-upload endpoint: accepts a Bearer session JWT (obtained from
-    /api/auth/login) or falls back to the standard session-cookie check.
-
-    This lets agents and scripts call the endpoint without a browser session while
-    still requiring authentication when AUTH_ENABLED is set.
-    """
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[len("Bearer "):].strip()
-        email = verify_session_token(token)
-        if email:
-            return
-        raise HTTPException(status_code=401, detail="Invalid or expired session token")
-    # No Bearer token: fall back to cookie-based session auth.
-    _require_auth(request)
 
 
 # ── Authentication endpoints ────────────────────────────────────────────
@@ -189,11 +183,11 @@ def api_auth_verify(request: Request) -> Dict[str, Any]:
     if not AUTH_ENABLED:
         return {"authenticated": True}
     
-    auth_token = request.cookies.get("auth_token")
-    if not auth_token:
+    token = _session_token(request)
+    if not token:
         return {"authenticated": False}
-    
-    email = verify_session_token(auth_token)
+
+    email = verify_session_token(token)
     if email:
         return {"authenticated": True, "email": email}
     
@@ -456,7 +450,7 @@ async def api_batch_upload(
     ``created``, ``already_exists``, or ``failed``.
     A file replaced using ``on_conflict=replace`` has status ``replaced``.
     """
-    _require_upload_auth(request)
+    _require_auth(request)
 
     uploaded = files or file or []
     if not uploaded:
