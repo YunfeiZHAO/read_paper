@@ -1,6 +1,7 @@
 """Authentication module: session management and JWT token handling."""
 from __future__ import annotations
 
+import hmac
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -52,8 +53,10 @@ def verify_credentials(email: str, password: str) -> bool:
     
     if not expected_password:
         return False
-    
-    return password == expected_password
+
+    # Constant-time comparison so response time does not leak how many leading
+    # characters of the password were correct. Compare bytes to tolerate non-ASCII.
+    return hmac.compare_digest(password.encode("utf-8"), expected_password.encode("utf-8"))
 
 
 def create_session_token(email: str) -> str:

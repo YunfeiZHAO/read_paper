@@ -16,6 +16,7 @@ from starlette.background import BackgroundTask
 
 from .auth import AUTH_ENABLED, create_session_token, verify_credentials, verify_session_token
 from .config import (
+    AUTH_SESSION_TIMEOUT_SECONDS,
     BACKENDS,
     BASE_DIR,
     ENABLE_WEB_SEARCH,
@@ -169,7 +170,7 @@ async def api_auth_login(request: Request) -> JSONResponse:
         httponly=True,
         secure=is_https,
         samesite="lax",
-        max_age=86400,  # 24 hours
+        max_age=AUTH_SESSION_TIMEOUT_SECONDS,  # matches the JWT's own expiry
     )
     return response
 
@@ -676,9 +677,10 @@ def api_delete_workspace(request: Request, workspace_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/workspaces/{workspace_id}/export", tags=["Import & Export"])
-def api_export_workspace(workspace_id: str) -> Any:
+def api_export_workspace(request: Request, workspace_id: str) -> Any:
     """Download the whole workspace (PDFs, shared files, highlights, chat tree, notes,
     AI scratch) as a single portable .zip. The secret API key is never included."""
+    _require_auth(request)
     ws = get_workspace(workspace_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace does not exist")
@@ -697,8 +699,9 @@ def api_export_workspace(workspace_id: str) -> Any:
 
 
 @router.post("/api/workspaces/import", tags=["Import & Export"])
-async def api_import_workspace(file: UploadFile = File(...)) -> JSONResponse:
+async def api_import_workspace(request: Request, file: UploadFile = File(...)) -> JSONResponse:
     """Import a workspace .zip exported by this app, recreating it with fresh IDs."""
+    _require_auth(request)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file received")
     tmp = tempfile.NamedTemporaryFile(prefix="ws-import-", suffix=".zip", delete=False)

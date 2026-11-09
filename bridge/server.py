@@ -19,6 +19,7 @@ Wire protocol of POST /run (NDJSON, one JSON object per line):
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import shutil
@@ -37,6 +38,25 @@ WORK_DIR = Path(os.environ.get("READPAPER_BRIDGE_WORKDIR", str(Path.home() / ".r
 # Optional pre-built venv: if it exists its bin/ is prepended to PATH so claude's bash tool
 # can import packages without having to `pip install` them on each run.
 VENV_DIR = Path(os.environ.get("READPAPER_BRIDGE_VENV", str(WORK_DIR.parent / "venv")))
+
+# ── Security ──────────────────────────────────────────────────────────────
+# The bridge runs the local `claude` with --dangerously-skip-permissions, so it must only
+# serve the app's own frontend. Two gates:
+#   1. Origin allowlist — browsers set the Origin header themselves and page JS cannot forge
+#      it on a cross-origin fetch, so this blocks any other web page from calling the bridge.
+#   2. Optional shared token (READPAPER_BRIDGE_TOKEN) — defense in depth against non-browser
+#      local callers, which *can* forge Origin. When set, /run also needs a matching header.
+def _parse_origins(raw: str) -> set:
+    return {o.strip().rstrip("/") for o in raw.split(",") if o.strip()}
+
+# The bridge is dedicated to this user's own app at reader.yunfeizhao.com; no other site may
+# drive the local claude. The production origin is the built-in default (localhost entries are
+# kept only for local development). Override with READPAPER_BRIDGE_ORIGINS if needed.
+ALLOWED_ORIGINS = _parse_origins(os.environ.get(
+    "READPAPER_BRIDGE_ORIGINS",
+    "https://reader.yunfeizhao.com,http://localhost:8080,http://127.0.0.1:8080",
+))
+BRIDGE_TOKEN = os.environ.get("READPAPER_BRIDGE_TOKEN", "").strip()
 
 
 def _bridge_env() -> Dict[str, str]:
@@ -210,15 +230,32 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:  # quieter default logging
         sys.stderr.write("[bridge] " + (fmt % args) + "\n")
 
-    # ── CORS ────────────────────────────────────────────────────────────
+    # ── CORS / authorization ──────────────────────────────────────────────
+    def _origin_allowed(self) -> bool:
+        origin = (self.headers.get("Origin") or "").rstrip("/")
+        return bool(origin) and origin in ALLOWED_ORIGINS
+
+    def _authorized(self) -> bool:
+        """A request may run only from an allowed Origin AND, when a token is configured,
+        with a matching X-Bridge-Token header (constant-time comparison)."""
+        if not self._origin_allowed():
+            return False
+        if BRIDGE_TOKEN:
+            provided = self.headers.get("X-Bridge-Token") or ""
+            return hmac.compare_digest(provided, BRIDGE_TOKEN)
+        return True
+
     def _cors_headers(self) -> None:
-        origin = self.headers.get("Origin") or "*"
-        self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Vary", "Origin")
+        # Only reflect Access-Control-Allow-Origin for origins on the allowlist; without it the
+        # browser refuses to expose the response to the calling page.
+        origin = (self.headers.get("Origin") or "").rstrip("/")
+        if origin and origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            # Chrome Private Network Access: a public (https) page calling localhost needs this.
+            self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "content-type")
-        # Chrome Private Network Access: a public (https) page calling localhost needs this.
-        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Allow-Headers", "content-type, x-bridge-token")
         self.send_header("Access-Control-Max-Age", "600")
 
     def do_OPTIONS(self) -> None:
@@ -250,6 +287,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] != "/run":
             self._send_json(404, {"error": "not found"})
             return
+        if not self._authorized():
+            self._send_json(403, {"error": "forbidden: origin not allowed or missing/invalid bridge token"})
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
@@ -262,7 +302,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "prompt is required"})
             return
         model = (payload or {}).get("model")
-        cwd = str((payload or {}).get("cwd") or WORK_DIR)
+        # The working directory is fixed to WORK_DIR — never taken from the request, so a
+        # caller cannot point the local claude process at an arbitrary directory on disk.
+        cwd = str(WORK_DIR)
         # Write any files the browser fetched (e.g. the source PDF) into the work dir so
         # the local claude process can read them without making further network requests.
         for f in (payload or {}).get("files") or []:

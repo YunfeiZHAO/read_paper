@@ -3775,9 +3775,14 @@ async function runViaBridge(nodeId, prompt, model) {
     const body = { prompt };
     if (model) body.model = model;
     if (files.length) body.files = files;
+    const headers = { "Content-Type": "application/json" };
+    // Optional shared secret: when the local bridge is started with READPAPER_BRIDGE_TOKEN,
+    // set the same value in localStorage("bridgeToken") so the request is authorized.
+    const bridgeToken = localStorage.getItem("bridgeToken");
+    if (bridgeToken) headers["X-Bridge-Token"] = bridgeToken;
     resp = await fetch(`${BRIDGE_URL}/run`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
   } catch {

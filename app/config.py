@@ -134,6 +134,11 @@ AUTH_ENABLED = bool(AUTH_USERS)
 
 # Session secret for JWT token signing
 AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "").strip()
-if not AUTH_SECRET_KEY and AUTH_ENABLED:
-    AUTH_SECRET_KEY = "default-dev-secret-key-change-in-production"
+if AUTH_ENABLED and not AUTH_SECRET_KEY:
+    raise RuntimeError(
+        "AUTH_USERS is set but AUTH_SECRET_KEY is empty. Refusing to start: session tokens "
+        "would be signed with a predictable key, letting anyone forge a session. Set "
+        "AUTH_SECRET_KEY to a strong random secret (e.g. `python -c \"import secrets; "
+        "print(secrets.token_urlsafe(48))\"`)."
+    )
 AUTH_SESSION_TIMEOUT_SECONDS = int(os.environ.get("AUTH_SESSION_TIMEOUT_SECONDS", "86400"))  # 24 hours
