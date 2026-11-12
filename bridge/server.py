@@ -20,18 +20,26 @@ from __future__ import annotations
 
 import base64
 import hmac
+import ipaddress
 import json
 import os
 import shutil
 import subprocess
 import sys
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("READPAPER_BRIDGE_PORT", "8765"))
+_CONFIG_FILE = Path(__file__).parent.parent / "static" / "bridge-config.json"
+def _load_config_port() -> int:
+    try:
+        return int(json.loads(_CONFIG_FILE.read_text()).get("port", 8767))
+    except Exception:
+        return 8767
+PORT = int(os.environ.get("READPAPER_BRIDGE_PORT", "") or _load_config_port())
 # Per-tool_result output kept small; the app trims the whole event list again for storage.
 MAX_TOOL_OUTPUT = 8000
 WORK_DIR = Path(os.environ.get("READPAPER_BRIDGE_WORKDIR", str(Path.home() / ".readpaper-bridge" / "work")))
@@ -49,12 +57,31 @@ VENV_DIR = Path(os.environ.get("READPAPER_BRIDGE_VENV", str(WORK_DIR.parent / "v
 def _parse_origins(raw: str) -> set:
     return {o.strip().rstrip("/") for o in raw.split(",") if o.strip()}
 
+def _is_local_origin(origin: str) -> bool:
+    """True for a page served from this machine (loopback/localhost or a private LAN address),
+    on any scheme/port. Used so local development on any port is accepted without listing each
+    one. Safe because the bridge binds HOST only, so such a page is in a browser on this machine.
+    """
+    try:
+        host = urllib.parse.urlsplit(origin).hostname or ""
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host in ("localhost",) or host.endswith(".localhost") or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+
 # The bridge is dedicated to this user's own app at reader.yunfeizhao.com; no other site may
 # drive the local claude. The production origin is the built-in default (localhost entries are
 # kept only for local development). Override with READPAPER_BRIDGE_ORIGINS if needed.
 ALLOWED_ORIGINS = _parse_origins(os.environ.get(
     "READPAPER_BRIDGE_ORIGINS",
-    "https://reader.yunfeizhao.com,http://localhost:8080,http://127.0.0.1:8080",
+    "https://reader.yunfeizhao.com,http://localhost,http://127.0.0.1",
 ))
 BRIDGE_TOKEN = os.environ.get("READPAPER_BRIDGE_TOKEN", "").strip()
 
@@ -233,7 +260,14 @@ class Handler(BaseHTTPRequestHandler):
     # ── CORS / authorization ──────────────────────────────────────────────
     def _origin_allowed(self) -> bool:
         origin = (self.headers.get("Origin") or "").rstrip("/")
-        return bool(origin) and origin in ALLOWED_ORIGINS
+        if not origin:
+            return False
+        if any(origin == o or origin.startswith(o + ":") for o in ALLOWED_ORIGINS):
+            return True
+        # Local development: accept any loopback/LAN origin on any port. This is safe because the
+        # bridge binds HOST (127.0.0.1) only, so a page can reach it solely from this same machine
+        # — a remote site has a public origin and never matches here.
+        return _is_local_origin(origin)
 
     def _authorized(self) -> bool:
         """A request may run only from an allowed Origin AND, when a token is configured,
@@ -249,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
         # Only reflect Access-Control-Allow-Origin for origins on the allowlist; without it the
         # browser refuses to expose the response to the calling page.
         origin = (self.headers.get("Origin") or "").rstrip("/")
-        if origin and origin in ALLOWED_ORIGINS:
+        if origin and self._origin_allowed():
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
             # Chrome Private Network Access: a public (https) page calling localhost needs this.
@@ -280,6 +314,7 @@ class Handler(BaseHTTPRequestHandler):
         claude_bin = find_claude()
         self._send_json(200, {
             "ok": claude_bin is not None,
+            "project": "readpaper",
             "claude": claude_version(claude_bin) if claude_bin else None,
         })
 

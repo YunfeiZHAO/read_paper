@@ -12,7 +12,13 @@ set -euo pipefail
 LABEL="com.readpaper.bridge"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER="$SCRIPT_DIR/server.py"
-PYTHON="$(command -v python3 || true)"
+# Prefer the repo venv so server.py uses the same interpreter as the app.
+VENV_PYTHON="$SCRIPT_DIR/../.venv/bin/python3"
+if [ -x "$VENV_PYTHON" ]; then
+  PYTHON="$(cd "$SCRIPT_DIR/.." && pwd)/.venv/bin/python3"
+else
+  PYTHON="$(command -v python3 || true)"
+fi
 LOCALBIN="$HOME/.local/bin"
 LOG="$HOME/Library/Logs/readpaper-bridge.log"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -78,8 +84,8 @@ echo "Installed LaunchAgent: $PLIST"
 echo "Python:  $PYTHON"
 echo "Server:  $SERVER"
 echo "Log:     $LOG"
-echo "Origins: ${READPAPER_BRIDGE_ORIGINS:-(default: http://localhost:8080,http://127.0.0.1:8080)}"
+echo "Origins: ${READPAPER_BRIDGE_ORIGINS:-(default: http://localhost, http://127.0.0.1)}"
 echo "Token:   ${READPAPER_BRIDGE_TOKEN:+set}${READPAPER_BRIDGE_TOKEN:-(none)}"
 echo
 echo "Verify it is up:"
-echo "  curl -s http://127.0.0.1:8765/health"
+echo "  curl -s http://127.0.0.1:8767/health"

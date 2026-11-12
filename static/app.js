@@ -79,6 +79,7 @@ const state = {
     : "claude",
   enableWebSearch: localStorage.getItem("askWebSearch") === "on",
   localModel: localStorage.getItem("localModel") || "",
+  customModels: JSON.parse(localStorage.getItem("customModels") || "[]"),
   // Local Claude Code bridge: null = unknown/not yet checked, true/false = last health result.
   bridgeConnected: null,
   layout: new Map(),
@@ -174,7 +175,14 @@ const els = {
   answerDownloadBtn: document.getElementById("answerDownloadBtn"),
   answerCloseBtn: document.getElementById("answerCloseBtn"),
   bridgeStatusBtn: document.getElementById("bridgeStatusBtn"),
+  localModelGroup: document.getElementById("localModelGroup"),
   localModelSelect: document.getElementById("localModelSelect"),
+  localModelRemoveBtn: document.getElementById("localModelRemoveBtn"),
+  localModelAddBtn: document.getElementById("localModelAddBtn"),
+  localModelAddForm: document.getElementById("localModelAddForm"),
+  localModelAddInput: document.getElementById("localModelAddInput"),
+  localModelAddConfirm: document.getElementById("localModelAddConfirm"),
+  localModelAddCancel: document.getElementById("localModelAddCancel"),
   bridgeModal: document.getElementById("bridgeModal"),
   bridgeRetryBtn: document.getElementById("bridgeRetryBtn"),
   bridgeCloseBtn: document.getElementById("bridgeCloseBtn"),
@@ -3692,20 +3700,55 @@ function renderWebSearchControls() {
 // helper on the user's machine (see bridge/server.py), which shells out to their local `claude`.
 // The API key never leaves the user's machine. Events come back shaped like the app's own event
 // stream and are written onto the node via /api/nodes/{id}/bridge-events.
-const BRIDGE_URL = "http://127.0.0.1:8765";
+let BRIDGE_URL = "http://127.0.0.1:8767";
+(async () => {
+  try {
+    const cfg = await fetch("/static/bridge-config.json").then((r) => r.json());
+    if (cfg && cfg.port) BRIDGE_URL = `http://127.0.0.1:${cfg.port}`;
+  } catch {}
+})();
+
+function _rebuildCustomModelOptions() {
+  const sel = els.localModelSelect;
+  if (!sel) return;
+  for (const opt of Array.from(sel.options)) {
+    if (opt.dataset.custom) opt.remove();
+  }
+  for (const name of state.customModels) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    opt.dataset.custom = "true";
+    sel.appendChild(opt);
+  }
+}
+
+function _saveCustomModels() {
+  localStorage.setItem("customModels", JSON.stringify(state.customModels));
+}
+
+function _isCustomModel(name) {
+  return name && state.customModels.includes(name);
+}
 
 function renderBridgeStatus() {
   const btn = els.bridgeStatusBtn;
   if (!btn) return;
   const isLocal = state.selectedBackend === "local";
   btn.hidden = !isLocal;
-  if (els.localModelSelect) {
-    els.localModelSelect.hidden = !isLocal;
-    if (isLocal) els.localModelSelect.value = state.localModel;
+  if (els.localModelGroup) {
+    els.localModelGroup.hidden = !isLocal;
+    if (isLocal && els.localModelSelect) {
+      _rebuildCustomModelOptions();
+      els.localModelSelect.value = state.localModel;
+      if (els.localModelRemoveBtn) {
+        els.localModelRemoveBtn.hidden = !_isCustomModel(state.localModel);
+      }
+    }
   }
   if (!isLocal) return;
   const connected = state.bridgeConnected === true;
-  btn.textContent = connected ? "本地 Claude · 已连接" : "本地 Claude · 未连接";
+  btn.textContent = connected ? "Local Claude · Connected" : "Local Claude · Disconnected";
   btn.classList.toggle("connected", connected);
   btn.classList.toggle("disconnected", !connected);
 }
@@ -3714,7 +3757,7 @@ async function checkBridgeHealth() {
   try {
     const res = await fetch(`${BRIDGE_URL}/health`, { method: "GET" });
     const data = await res.json();
-    state.bridgeConnected = !!data.ok;
+    state.bridgeConnected = !!data.ok && data.project === "readpaper";
   } catch {
     state.bridgeConnected = false;
   }
@@ -3723,11 +3766,17 @@ async function checkBridgeHealth() {
 }
 
 function openBridgeModal() {
-  if (els.bridgeModal) els.bridgeModal.hidden = false;
+  if (els.bridgeModal) {
+    els.bridgeModal.hidden = false;
+    els.bridgeModal.style.display = "flex";
+  }
 }
 
 function closeBridgeModal() {
-  if (els.bridgeModal) els.bridgeModal.hidden = true;
+  if (els.bridgeModal) {
+    els.bridgeModal.style.display = "";
+    els.bridgeModal.hidden = true;
+  }
 }
 
 // Post the accumulated events onto the node through the normal lifecycle. `status` is
@@ -5204,9 +5253,63 @@ function wireEvents() {
     }
   });
   if (els.localModelSelect) {
+    _rebuildCustomModelOptions();
     els.localModelSelect.addEventListener("change", () => {
       state.localModel = els.localModelSelect.value;
       localStorage.setItem("localModel", state.localModel);
+      if (els.localModelRemoveBtn) {
+        els.localModelRemoveBtn.hidden = !_isCustomModel(state.localModel);
+      }
+    });
+  }
+  if (els.localModelRemoveBtn) {
+    els.localModelRemoveBtn.addEventListener("click", () => {
+      const name = state.localModel;
+      state.customModels = state.customModels.filter((m) => m !== name);
+      _saveCustomModels();
+      state.localModel = "";
+      localStorage.setItem("localModel", "");
+      _rebuildCustomModelOptions();
+      els.localModelSelect.value = "";
+      els.localModelRemoveBtn.hidden = true;
+    });
+  }
+  if (els.localModelAddBtn) {
+    els.localModelAddBtn.addEventListener("click", () => {
+      els.localModelAddForm.hidden = false;
+      els.localModelAddBtn.hidden = true;
+      els.localModelAddInput.value = "";
+      els.localModelAddInput.focus();
+    });
+  }
+  function _confirmAddModel() {
+    const name = els.localModelAddInput.value.trim();
+    if (name && !state.customModels.includes(name)) {
+      state.customModels.push(name);
+      _saveCustomModels();
+      _rebuildCustomModelOptions();
+      els.localModelSelect.value = name;
+      state.localModel = name;
+      localStorage.setItem("localModel", name);
+      if (els.localModelRemoveBtn) els.localModelRemoveBtn.hidden = false;
+    }
+    els.localModelAddForm.hidden = true;
+    els.localModelAddBtn.hidden = false;
+  }
+  function _cancelAddModel() {
+    els.localModelAddForm.hidden = true;
+    els.localModelAddBtn.hidden = false;
+  }
+  if (els.localModelAddConfirm) {
+    els.localModelAddConfirm.addEventListener("click", _confirmAddModel);
+  }
+  if (els.localModelAddCancel) {
+    els.localModelAddCancel.addEventListener("click", _cancelAddModel);
+  }
+  if (els.localModelAddInput) {
+    els.localModelAddInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") _confirmAddModel();
+      if (e.key === "Escape") _cancelAddModel();
     });
   }
   if (els.bridgeModal) {
