@@ -1,0 +1,251 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PDF viewer regression tests</title>
+<link rel="stylesheet" href="../static/styles.css">
+<style>
+  body { display: block; padding: 16px; }
+  #reader { display: flex; width: 850px; height: 600px; }
+  #results { white-space: pre-wrap; }
+</style>
+<h1>PDF viewer regression tests</h1>
+<p>Serve the repository with <code>uv run python -m http.server 8765</code>,
+then open <code>/tests/pdf_viewer.html</code>. No server APIs or external services are used.</p>
+<div id="reader">
+  <div id="viewport" class="pdf-viewport"><div id="pages" class="pdf-pages"></div></div>
+  <div id="minimap" class="pdf-minimap" hidden></div>
+</div>
+<pre id="results">Running...</pre>
+<script src="../static/vendor/pdfjs/pdf.min.js"></script>
+<script type="module">
+const results = document.querySelector("#results");
+const log = (message) => { results.textContent += `${message}\n`; };
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+async function until(predicate, message) {
+  const deadline = performance.now() + 15000;
+  while (!predicate()) {
+    if (performance.now() > deadline) throw new Error(`Timed out: ${message}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function makePdf(count) {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Count ${count} /Kids [${
+      Array.from({ length: count }, (_, i) => `${4 + i * 2} 0 R`).join(" ")
+    }] >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  for (let i = 0; i < count; i++) {
+    const stream = `BT /F1 18 Tf 40 400 Td (Page ${i + 1} selectable text) Tj ET\n`;
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${
+      i % 2 ? "792 612" : "612 792"
+    }] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + i * 2} 0 R >>`);
+    objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}endstream`);
+  }
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, i) => {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  pdf += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return new TextEncoder().encode(pdf);
+}
+
+let api;
+try {
+  results.textContent = "";
+  const source = await (await fetch(`../static/app.js?test=${Date.now()}`, { cache: "no-store" })).text();
+  // Exercise the production viewer functions with an isolated DOM/state.
+  const viewerCode = source.slice(source.indexOf('const HL_COLORS ='), source.indexOf('// ── Text selection →'));
+  const selectionCode = source.slice(source.indexOf('function pageElForNode('), source.indexOf('async function persistHighlight('));
+  const highlightsCode = source.slice(source.indexOf('function renderHighlights()'), source.indexOf('function revealNodeSourceHighlight('));
+  const state = {
+    currentDocId: "test", pdfScale: 1, pdfRenderedScale: 1, pdfHorizontal: false,
+    pdfMinimapOpen: false, pdfPageViewports: new Map(), highlights: [
+      { id: "highlight", page: 399, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] },
+    ],
+  };
+  const els = {
+    pdfPages: document.querySelector("#pages"),
+    pdfViewport: document.querySelector("#viewport"),
+    pdfMinimap: document.querySelector("#minimap"),
+  };
+  api = new Function("state", "els", "clamp", `${viewerCode}\n${selectionCode}\n${highlightsCode}
+    return { loadPdf, setPdfScale, togglePdfLayout, toggleMinimap, disposePdfViewer,
+      handlePdfMouseUp, handlePdfWheelZoom, scrollToHighlight,
+      getViewer: () => pdfViewer, maxPixels: PDF_MAX_CANVAS_PIXELS };`)(state, els,
+      (value, min, max) => Math.min(max, Math.max(min, value)));
+  const realPdfjs = window.pdfjsLib;
+  let cancelled = 0;
+  let running = 0;
+  let maxRunning = 0;
+  let renderCount = 0;
+  let delay = 0;
+  window.pdfjsLib = {
+    ...realPdfjs,
+    getDocument() {
+      const task = realPdfjs.getDocument({ data: makePdf(400) });
+      task.promise.then((pdf) => {
+        const getPage = pdf.getPage.bind(pdf);
+        const wrapped = new WeakSet();
+        pdf.getPage = async (number) => {
+          const page = await getPage(number);
+          if (!wrapped.has(page)) {
+            wrapped.add(page);
+            const render = page.render.bind(page);
+            page.render = (options) => {
+              const task = render(options);
+              running++;
+              renderCount++;
+              maxRunning = Math.max(maxRunning, running);
+              const promise = task.promise.then(async (value) => {
+                if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+                return value;
+              }).finally(() => { running--; });
+              return { promise, cancel() { cancelled++; task.cancel(); } };
+            };
+          }
+          return page;
+        };
+      }).catch(() => { /* Rapid replacement deliberately destroys a loading task. */ });
+      return task;
+    },
+  };
+  await api.loadPdf();
+  const viewer = api.getViewer();
+  await until(() => viewer.pages[0].scale === 1, "first page");
+  assert(viewer.pages.length === 400, "400 navigation placeholders");
+  assert(renderCount < 15, "first display must not render the whole document");
+  assert(els.pdfPages.querySelectorAll(".pdf-canvas").length <= 10, "bounded initial canvases");
+  assert(viewer.pages[0].el.querySelector(".textLayer").textContent.includes("selectable"), "real text layer");
+  await until(() => state.pdfPageViewports.get(399)?.width === 792, "mixed page dimensions");
+  log("PASS: 400-page PDF displays without rendering all pages; mixed page sizes and selectable text.");
+
+  const originalCanvas = viewer.pages[0].el.querySelector("canvas");
+  async function jump(index) {
+    viewer.pages[index].el.scrollIntoView({ behavior: "instant", block: "start", inline: "start" });
+    await until(() => viewer.pages[index].scale === state.pdfScale, `page ${index + 1}`);
+  }
+  for (const index of [40, 80, 120, 160, 200, 240, 280, 320, 360, 399]) await jump(index);
+  assert(els.pdfPages.querySelectorAll(".pdf-canvas").length <= 10, "bounded cache after scrolling");
+  assert(originalCanvas.width === 0, "eviction releases bitmap backing store");
+  const last = viewer.pages[399].el;
+  const box = last.querySelector(".pdf-hl");
+  assert(box && Math.abs(box.offsetLeft / last.clientWidth - 0.1) < 0.002, "normalized highlight position");
+  log("PASS: distant navigation, cache eviction, canvas release, and highlight restoration.");
+
+  delay = 200;
+  api.setPdfScale(1.7);
+  await until(() => running > 0, "zoom render starts");
+  const viewportRect = els.pdfViewport.getBoundingClientRect();
+  const cursorY = viewportRect.top + viewportRect.height / 2;
+  const beforeZoom = last.getBoundingClientRect();
+  const anchorFraction = (cursorY - beforeZoom.top) / beforeZoom.height;
+  api.setPdfScale(3);
+  await until(() => viewer.pages[399].scale === 3, "latest zoom becomes sharp");
+  const afterZoom = last.getBoundingClientRect();
+  assert(Math.abs(afterZoom.top + anchorFraction * afterZoom.height - cursorY) < 2,
+    `zoom preserves cursor anchor: ${JSON.stringify({ beforeZoom, afterZoom, cursorY, anchorFraction })}`);
+  const scrollAtCommit = els.pdfViewport.scrollTop;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert(Math.abs(els.pdfViewport.scrollTop - scrollAtCommit) < 2, "crisp swap must not move scroll");
+  assert(viewer.pages[399].el === last, "zoom must preserve page elements");
+  assert(cancelled > 0, "obsolete render tasks cancelled");
+  assert(maxRunning <= 2, "render concurrency bounded at two");
+  for (const canvas of els.pdfPages.querySelectorAll("canvas")) {
+    assert(canvas.width * canvas.height <= api.maxPixels, "per-page pixel limit");
+  }
+  const span = last.querySelector(".textLayer span");
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  api.handlePdfMouseUp();
+  await until(() => state.pendingSelection, "text selection after zoom");
+  assert(state.pendingSelection.page === 399 && state.pendingSelection.quote.includes("selectable"), "selection quote");
+  assert(state.pendingSelection.rects.every((rect) =>
+    rect.x >= 0 && rect.x + rect.w <= 1.01 && rect.y >= 0 && rect.y + rect.h <= 1.01), "selection uses normalized page coordinates");
+  getSelection().removeAllRanges();
+  delay = 0;
+  const scaleBeforeScroll = state.pdfScale;
+  api.handlePdfWheelZoom({ ctrlKey: false, preventDefault() { throw new Error("Plain scrolling intercepted"); } });
+  assert(state.pdfScale === scaleBeforeScroll, "plain scrolling must not zoom");
+  els.pdfViewport.addEventListener("wheel", api.handlePdfWheelZoom, { passive: false });
+  const wheel = new WheelEvent("wheel", {
+    ctrlKey: true, deltaY: 10, cancelable: true,
+    clientX: viewportRect.left + viewportRect.width / 2, clientY: cursorY,
+  });
+  els.pdfViewport.dispatchEvent(wheel);
+  assert(wheel.defaultPrevented && state.pdfScale < scaleBeforeScroll, "Ctrl-wheel zoom");
+  await until(() => viewer.pages[399].scale === state.pdfScale, "wheel zoom settles");
+  log("PASS: zoom cancellation, stable cursor anchor, text selection, two-job concurrency and canvas pixel cap.");
+
+  api.toggleMinimap();
+  await until(() => viewer.pages.some((entry) => entry.thumbReady), "lazy thumbnails");
+  assert(els.pdfMinimap.querySelectorAll("canvas").length < 30, "minimap must be lazy");
+  const cachedThumb = viewer.pages.find((entry) => entry.thumbReady).thumb.firstChild;
+  api.setPdfScale(1.5);
+  await until(() => viewer.pages[399].scale === 1.5, "zoom with minimap");
+  assert(cachedThumb.isConnected, "zoom must reuse thumbnail canvases");
+  viewer.thumbNear.clear();
+  els.pdfMinimap.children[399].scrollIntoView({ behavior: "instant", block: "start" });
+  await until(() => viewer.pages[399].thumbReady, "last thumbnail");
+  log("PASS: lazy minimap includes distant pages and caches thumbnails across zoom.");
+
+  api.togglePdfLayout();
+  await jump(200);
+  assert(els.pdfViewport.scrollLeft > 0, "horizontal navigation");
+  api.togglePdfLayout();
+  await jump(399);
+  api.scrollToHighlight(state.highlights[0]);
+  await until(() => {
+    const pageRect = last.getBoundingClientRect();
+    const viewport = els.pdfViewport.getBoundingClientRect();
+    const center = pageRect.top + pageRect.height * 0.22;
+    return Math.abs(center - (viewport.top + els.pdfViewport.clientHeight / 2)) < 3;
+  }, "highlight navigation");
+  log("PASS: vertical and horizontal navigation.");
+
+  const brokenPage = await state.pdfDoc.getPage(61);
+  const originalRender = brokenPage.render;
+  brokenPage.render = () => { throw new Error("Intentional regression-test raster failure"); };
+  viewer.pages[60].el.scrollIntoView({ behavior: "instant", block: "start" });
+  await until(() => viewer.pages[60].el.querySelector(".pdf-error"), "visible page failure");
+  assert(viewer.pages[60].scale === 0, "failed page must not be marked rendered");
+  brokenPage.render = originalRender;
+  api.setPdfScale(1.6);
+  await until(() => viewer.pages[60].scale === 1.6, "page retry after zoom");
+  assert(!viewer.pages[60].el.querySelector(".pdf-error"), "retry clears page error");
+  const textPage = await state.pdfDoc.getPage(101);
+  const originalText = textPage.getTextContent;
+  textPage.getTextContent = async () => { throw new Error("Intentional regression-test text failure"); };
+  await jump(100);
+  assert(viewer.pages[100].el.querySelector("canvas"), "text failure preserves raster");
+  textPage.getTextContent = originalText;
+  log("PASS: raster failures are visible and recoverable; text-layer failure preserves page image.");
+
+  const pending = api.loadPdf();
+  await api.loadPdf();
+  await pending;
+  await until(() => api.getViewer().pages[0]?.scale === 1.6, "replacement document");
+  assert(api.getViewer() !== viewer, "document switch replaces viewer");
+  assert(originalCanvas.width === 0, "old canvases remain released");
+  api.disposePdfViewer();
+  await until(() => running === 0, "all renders settle after disposal");
+  assert(els.pdfPages.querySelectorAll("canvas").length === 0, "dispose releases page DOM");
+  assert(els.pdfMinimap.children.length === 0, "dispose releases minimap");
+  log("PASS: rapid document replacement and cleanup without stale commits.");
+  document.title = "PASS - PDF viewer regression tests";
+} catch (error) {
+  api?.disposePdfViewer();
+  log(`FAIL: ${error.stack || error}`);
+  document.title = "FAIL - PDF viewer regression tests";
+}
+</script>

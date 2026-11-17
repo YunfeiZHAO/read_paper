@@ -2673,6 +2673,7 @@ button.meta-pill {
 .pdf-viewport {
   position: relative;
   overflow: auto;
+  overflow-anchor: none;
   padding: 16px;
   background: var(--canvas-bg);
   flex: 1 1 0;
@@ -2699,6 +2700,7 @@ button.meta-pill {
 .pdf-minimap[hidden] { display: none; }
 .pdf-minimap-item {
   position: relative;
+  flex-shrink: 0;
   border: 1px solid var(--line);
   background: #fff;
   padding: 0;
@@ -2713,6 +2715,7 @@ button.meta-pill {
   box-shadow: 0 0 0 2px rgba(58, 110, 165, 0.35);
 }
 .pdf-minimap-item canvas { display: block; width: 100%; height: auto; border-radius: 1px; }
+.pdf-minimap-thumb { width: 78px; }
 .pdf-minimap-num {
   position: absolute;
   bottom: 2px;
@@ -2739,11 +2742,19 @@ button.meta-pill {
 }
 .pdf-page {
   position: relative;
+  flex-shrink: 0;
   background: #fff;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
   overflow: hidden;
 }
 [data-theme="dark"] .pdf-page { background: var(--bg); }
+.pdf-page-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  transform: scale(var(--pdf-preview-scale, 1));
+}
 .pdf-canvas { display: block; }
 [data-theme="dark"] .pdf-canvas { filter: invert(0.88) hue-rotate(180deg); }
 

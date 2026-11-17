@@ -16,6 +16,11 @@ Backends are pluggable: the **Claude API** (default) or the **Codex CLI**.
 - **Highlight and ask** — select text in the PDF to highlight it or ask a question straight
   from the selection. Highlights are stored as normalized page-fraction rects, so they survive
   reload and zoom. Saving a highlight never creates a node; asking does.
+- **Large-PDF rendering** — only visible and nearby pages are rendered, with a small
+  offscreen cache. Zoom previews immediately and sharpens nearby pages after settling;
+  obsolete renders are cancelled. Canvas resolution is capped at 4 megapixels per page
+  (and 2x pixel density), trading some sharpness at extreme zoom for bounded memory.
+  Minimap thumbnails load lazily and are reused across zoom changes.
 - **Branching question tree** — every Q&A turn is a node. Fork a new question from any earlier
   node and the full ancestor chain is stitched back into the prompt, so each call is
   self-contained without a literal chat-history API.
@@ -269,6 +274,11 @@ for a guided tour of the codebase.
 ```bash
 uv run pytest
 ```
+
+For the browser viewer regression suite, run `uv run python -m http.server 8765`
+and open <http://localhost:8765/tests/pdf_viewer.html>. It generates a 400-page PDF
+locally and checks rendering bounds, zoom, cancellation, highlights, both layouts,
+lazy thumbnails, and document cleanup using the vendored PDF.js.
 
 > A separate, standalone CLI lives under [`cli/`](cli/) (treeflow) for browsing local Claude
 > Code / Codex conversation history. It shares no code with this web app — see `cli/README.md`.

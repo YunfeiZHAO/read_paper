@@ -49,8 +49,8 @@ const state = {
   currentDocId: localStorage.getItem("currentDocId") || null,
   pdfDoc: null,
   pdfScale: Number(localStorage.getItem("pdfScale")) || 1.3,
-  // The scale the page canvases are actually rasterized at. During a live pinch
-  // we CSS-zoom relative to this, then re-rasterize and reset the zoom to 1.
+  // Stable text-layer scale. Page shells resize and contents scale in place;
+  // nearby canvases are rasterized separately at pdfScale.
   pdfRenderedScale: Number(localStorage.getItem("pdfScale")) || 1.3,
   pdfHorizontal: localStorage.getItem("pdfHorizontal") === "1",
   pdfMinimapOpen: localStorage.getItem("pdfMinimapOpen") === "1",
@@ -60,7 +60,6 @@ const state = {
   pdfChromeHidden: localStorage.getItem("pdfChromeHidden") === "1",
   topbarFolded: localStorage.getItem("topbarFolded") === "1",
   darkMode: localStorage.getItem("darkMode") === "1",
-  pdfRenderToken: 0,
   pdfPageViewports: new Map(),
   highlights: [],
   pendingSelection: null, // {quote, page, rects, color}
@@ -660,7 +659,10 @@ async function applyRoute() {
 
   // Leaving the reader (to home or a workspace) closes any open study session. Switching
   // between documents inside the reader is handled by selectDocument → timeTrackStart.
-  if (route.view !== "reader") ttStop().catch(console.error);
+  if (route.view !== "reader") {
+    ttStop().catch(console.error);
+    disposePdfViewer();
+  }
 
   if (route.view === "home") {
     await Promise.all([fetchWorkspaces(), fetchUploadedDocuments()]);
@@ -4352,120 +4354,318 @@ if (window.pdfjsLib) {
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = "/static/vendor/pdfjs/pdf.worker.min.js";
 }
 
+const PDF_RENDER_CONCURRENCY = 2;
+const PDF_PAGE_CACHE_SIZE = 10;
+const PDF_MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
+let pdfViewer = null;
+
+function cancelPdfJob(job) {
+  job.cancelled = true;
+  if (job.task) job.task.cancel();
+}
+
+function disposePdfViewer() {
+  clearTimeout(pdfZoomRenderTimer);
+  pdfZoomRenderTimer = null;
+  const viewer = pdfViewer;
+  pdfViewer = null;
+  state.pdfDoc = null;
+  if (!viewer) return;
+  viewer.nearObserver?.disconnect();
+  viewer.visibleObserver?.disconnect();
+  viewer.thumbObserver?.disconnect();
+  for (const job of viewer.jobs.values()) cancelPdfJob(job);
+  for (const entry of viewer.pages) {
+    releasePdfPage(entry);
+    for (const canvas of entry.thumb?.querySelectorAll("canvas") || []) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  }
+  els.pdfMinimap?.replaceChildren();
+  viewer.loadingTask.destroy().catch((err) => console.error("PDF cleanup failed", err));
+}
+
 async function loadPdf() {
-  const token = ++state.pdfRenderToken;
+  disposePdfViewer();
   state.pdfPageViewports = new Map();
-  if (els.pdfPages) els.pdfPages.replaceChildren();
+  if (els.pdfPages) {
+    els.pdfPages.replaceChildren();
+    els.pdfPages.style.setProperty("--pdf-preview-scale", "1");
+  }
   const docId = state.currentDocId;
   if (!docId || !window.pdfjsLib) {
-    state.pdfDoc = null;
     if (els.pdfEmpty) els.pdfEmpty.hidden = Boolean(docId);
     updatePdfPageInfo();
     return;
   }
   if (els.pdfEmpty) els.pdfEmpty.hidden = true;
+  const viewer = {
+    loadingTask: window.pdfjsLib.getDocument({ url: `/api/documents/${docId}/file` }),
+    pages: [], jobs: new Map(), near: new Set(), visible: new Map(),
+    thumbNear: new Set(), active: 0, clock: 0, generation: 0,
+  };
+  pdfViewer = viewer;
   try {
-    const task = window.pdfjsLib.getDocument({ url: `/api/documents/${docId}/file` });
-    const pdf = await task.promise;
-    if (token !== state.pdfRenderToken) return; // the document changed while rendering
+    const pdf = await viewer.loadingTask.promise;
+    if (pdfViewer !== viewer) return;
     state.pdfDoc = pdf;
-    await renderLoadedPdf(pdf, token);
+    await renderLoadedPdf(pdf, viewer);
   } catch (err) {
+    if (pdfViewer !== viewer) return;
     console.error("PDF failed to load", err);
-    if (els.pdfPages) {
+    const msg = document.createElement("div");
+    msg.className = "pdf-error";
+    msg.textContent = `PDF failed to load: ${err.message || err}`;
+    els.pdfPages.replaceChildren(msg);
+  }
+}
+
+function setPdfPageSize(entry, viewport) {
+  const ratio = state.pdfScale / state.pdfRenderedScale;
+  entry.el.style.width = `${viewport.width * ratio}px`;
+  entry.el.style.height = `${viewport.height * ratio}px`;
+  entry.el.style.setProperty("--scale-factor", String(viewport.scale));
+  state.pdfPageViewports.set(entry.index, { width: viewport.width, height: viewport.height });
+}
+
+async function renderLoadedPdf(pdf, viewer) {
+  const first = await pdf.getPage(1);
+  if (pdfViewer !== viewer) return;
+  state.pdfRenderedScale = state.pdfScale;
+  const viewport = first.getViewport({ scale: state.pdfRenderedScale });
+  const frag = document.createDocumentFragment();
+  for (let index = 0; index < pdf.numPages; index += 1) {
+    const el = document.createElement("div");
+    el.className = "pdf-page";
+    el.dataset.page = String(index);
+    const entry = { index, el, scale: 0, used: 0, page: null, thumb: null };
+    viewer.pages.push(entry);
+    setPdfPageSize(entry, viewport);
+    frag.appendChild(el);
+  }
+  els.pdfPages.replaceChildren(frag);
+  applyPdfLayout();
+  updatePdfPageInfo();
+  viewer.nearObserver = new IntersectionObserver((entries) => {
+    if (pdfViewer !== viewer) return;
+    for (const entry of entries) {
+      const index = Number(entry.target.dataset.page);
+      if (entry.isIntersecting) viewer.near.add(index);
+      else viewer.near.delete(index);
+    }
+    schedulePdfPages(viewer);
+  }, { root: els.pdfViewport, rootMargin: "100%" });
+  viewer.visibleObserver = new IntersectionObserver((entries) => {
+    if (pdfViewer !== viewer) return;
+    for (const entry of entries) {
+      const index = Number(entry.target.dataset.page);
+      if (entry.isIntersecting) viewer.visible.set(index, entry.intersectionRatio);
+      else viewer.visible.delete(index);
+    }
+    updateMinimapActive();
+    schedulePdfPages(viewer);
+  }, { root: els.pdfViewport, threshold: [0, 0.25, 0.5, 0.75, 1] });
+  for (const entry of viewer.pages) {
+    viewer.nearObserver.observe(entry.el);
+    viewer.visibleObserver.observe(entry.el);
+  }
+  buildPdfMinimap();
+  // Only metadata is read in the background; no distant canvases or text DOM.
+  hydratePdfPageSizes(pdf, viewer).catch((err) => {
+    if (pdfViewer === viewer) console.error("PDF page dimensions failed to load", err);
+  });
+}
+
+function capturePdfAnchor(viewer) {
+  const entry = viewer.pages[viewer.active];
+  if (!entry || !viewer.visible.size) return null;
+  const rect = entry.el.getBoundingClientRect();
+  return { entry, left: rect.left, top: rect.top };
+}
+
+function restorePdfAnchor(anchor) {
+  if (!anchor) return;
+  const rect = anchor.entry.el.getBoundingClientRect();
+  els.pdfViewport.scrollLeft += rect.left - anchor.left;
+  els.pdfViewport.scrollTop += rect.top - anchor.top;
+}
+
+async function hydratePdfPageSizes(pdf, viewer) {
+  for (const entry of viewer.pages) {
+    const page = await pdf.getPage(entry.index + 1);
+    if (pdfViewer !== viewer) return;
+    const viewport = page.getViewport({ scale: state.pdfRenderedScale });
+    updatePdfPageSize(viewer, entry, viewport);
+    if (entry.index % 20 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+function updatePdfPageSize(viewer, entry, viewport) {
+  const old = state.pdfPageViewports.get(entry.index);
+  if (old.width === viewport.width && old.height === viewport.height) return;
+  const anchor = capturePdfAnchor(viewer);
+  setPdfPageSize(entry, viewport);
+  if (entry.thumb) entry.thumb.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+  if (entry.scale) drawHighlightsForPage(entry.index);
+  restorePdfAnchor(anchor);
+}
+
+function releasePdfPage(entry) {
+  for (const canvas of entry.el.querySelectorAll("canvas")) {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+  entry.el.replaceChildren();
+  entry.scale = 0;
+  // PDF.js defers cleanup itself if another render is still using this page.
+  entry.page?.cleanup();
+  entry.page = null;
+}
+
+function schedulePdfPages(viewer = pdfViewer) {
+  if (!viewer || pdfViewer !== viewer || !state.pdfDoc) return;
+  for (const job of viewer.jobs.values()) {
+    const wanted = job.thumbnail ? viewer.thumbNear.has(job.index) : viewer.near.has(job.index);
+    if (!wanted) cancelPdfJob(job);
+  }
+  const nearby = [...viewer.near].sort((a, b) =>
+    Number(viewer.visible.has(b)) - Number(viewer.visible.has(a)) ||
+    Math.abs(a - viewer.active) - Math.abs(b - viewer.active));
+  for (const index of nearby) viewer.pages[index].used = ++viewer.clock;
+  const cached = viewer.pages.filter((entry) => entry.scale && !viewer.near.has(entry.index))
+    .sort((a, b) => b.used - a.used);
+  for (const entry of cached.slice(Math.max(0, PDF_PAGE_CACHE_SIZE - nearby.length))) {
+    releasePdfPage(entry);
+  }
+  // Keep the scaled old bitmap during a gesture; sharpen only after settling.
+  if (!pdfZoomRenderTimer) {
+    for (const index of nearby) {
+      const entry = viewer.pages[index];
+      if (viewer.jobs.size >= PDF_RENDER_CONCURRENCY) break;
+      if (entry.scale === state.pdfScale || entry.failed === viewer.generation || viewer.jobs.has(index)) continue;
+      startPdfJob(viewer, entry, false);
+    }
+  }
+  for (const index of viewer.thumbNear) {
+    if (viewer.jobs.size >= PDF_RENDER_CONCURRENCY) break;
+    const entry = viewer.pages[index];
+    if (entry.thumbReady || entry.thumbFailed || viewer.jobs.has(`thumb-${index}`)) continue;
+    startPdfJob(viewer, entry, true);
+  }
+}
+
+function startPdfJob(viewer, entry, thumbnail) {
+  const key = thumbnail ? `thumb-${entry.index}` : entry.index;
+  const job = { index: entry.index, thumbnail, cancelled: false, task: null };
+  const generation = viewer.generation;
+  viewer.jobs.set(key, job);
+  renderPdfPage(state.pdfDoc, entry, viewer, job).catch((err) => {
+    if (job.cancelled || pdfViewer !== viewer) return;
+    console.error(`PDF page ${entry.index + 1} failed to render`, err);
+    if (thumbnail) entry.thumbFailed = true;
+    else {
+      entry.failed = generation;
       const msg = document.createElement("div");
       msg.className = "pdf-error";
-      msg.textContent = `PDF failed to load: ${err.message || err}`;
-      els.pdfPages.replaceChildren(msg);
+      msg.textContent = `Page ${entry.index + 1} failed to render: ${err.message || err}`;
+      entry.el.appendChild(msg);
+    }
+  }).finally(() => {
+    viewer.jobs.delete(key);
+    schedulePdfPages(viewer);
+  });
+}
+
+async function renderPdfPage(pdf, entry, viewer, job) {
+  const page = await pdf.getPage(entry.index + 1);
+  if (job.cancelled || pdfViewer !== viewer) return;
+  const scale = state.pdfScale;
+  const viewport = page.getViewport({ scale: state.pdfRenderedScale });
+  updatePdfPageSize(viewer, entry, viewport);
+  const canvas = document.createElement("canvas");
+  canvas.className = "pdf-canvas";
+  const ratio = job.thumbnail ? MINIMAP_THUMB_WIDTH / viewport.width : Math.min(
+    Math.min(window.devicePixelRatio || 1, 2) * scale / state.pdfRenderedScale,
+    Math.sqrt(PDF_MAX_CANVAS_PIXELS / (viewport.width * viewport.height)),
+  );
+  canvas.width = Math.max(1, Math.floor(viewport.width * ratio));
+  canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
+  canvas.style.width = `${viewport.width}px`;
+  canvas.style.height = `${viewport.height}px`;
+  let committed = false;
+  try {
+    job.task = page.render({
+      canvasContext: canvas.getContext("2d"), viewport,
+      transform: [ratio, 0, 0, ratio, 0, 0],
+    });
+    await job.task.promise;
+    job.task = null;
+    if (job.cancelled || pdfViewer !== viewer) return;
+    if (job.thumbnail) {
+      canvas.style.width = "100%";
+      canvas.style.height = "auto";
+      entry.thumb.replaceChildren(canvas);
+      entry.thumbReady = true;
+      committed = true;
+      if (!entry.page) page.cleanup();
+      return;
+    }
+    const textLayer = document.createElement("div");
+    textLayer.className = "textLayer";
+    // Text-layer measurements need a connected container (font size / scale).
+    const content = document.createElement("div");
+    content.className = "pdf-page-content";
+    content.style.width = `${viewport.width}px`;
+    content.style.height = `${viewport.height}px`;
+    content.style.visibility = "hidden";
+    content.appendChild(textLayer);
+    entry.el.appendChild(content);
+    try {
+      try {
+        const textContent = await page.getTextContent();
+        if (job.cancelled || pdfViewer !== viewer) return;
+        job.task = window.pdfjsLib.renderTextLayer({
+          textContentSource: textContent, container: textLayer, viewport, textDivs: [],
+        });
+        await job.task.promise;
+        job.task = null;
+      } catch (err) {
+        if (job.cancelled || pdfViewer !== viewer) return;
+        console.warn(`Text layer for PDF page ${entry.index + 1} failed to render`, err);
+        textLayer.replaceChildren();
+      }
+      if (job.cancelled || pdfViewer !== viewer) return;
+      const hlLayer = document.createElement("div");
+      hlLayer.className = "pdf-hl-layer";
+      releasePdfPage(entry);
+      content.style.visibility = "";
+      content.prepend(canvas);
+      entry.el.replaceChildren(content, hlLayer);
+      entry.scale = scale;
+      entry.page = page;
+      committed = true;
+      drawHighlightsForPage(entry.index);
+    } finally {
+      if (!committed) content.remove();
+    }
+  } finally {
+    if (!committed) {
+      canvas.width = 0;
+      canvas.height = 0;
+      if (!entry.page && pdfViewer === viewer) page.cleanup();
     }
   }
 }
 
-// Re-rasterize the document we already have in memory (e.g. after a zoom),
-// skipping loadPdf()'s network fetch + parse — that re-fetch was what made
-// zooming feel like a reload.
-async function rerenderPdf() {
-  if (!state.pdfDoc) return loadPdf();
-  const token = ++state.pdfRenderToken;
-  try {
-    await renderLoadedPdf(state.pdfDoc, token);
-  } catch (err) {
-    console.error("PDF re-render failed", err);
+function rerenderPdf() {
+  const viewer = pdfViewer;
+  if (!viewer) return;
+  viewer.generation += 1;
+  for (const job of viewer.jobs.values()) {
+    if (!job.thumbnail) cancelPdfJob(job);
   }
-}
-
-// Render every page of an open PDF document. Pages are rasterized into a
-// detached fragment first, then swapped in atomically — so the currently
-// visible pages (possibly CSS-zoomed by a live pinch) stay on screen until the
-// crisp set is ready, and the swap/zoom-reset happen in the same frame with
-// identical geometry, avoiding any flash.
-async function renderLoadedPdf(pdf, token) {
-  state.pdfPageViewports = new Map();
-  const frag = document.createDocumentFragment();
-  for (let n = 1; n <= pdf.numPages; n += 1) {
-    const pageEl = document.createElement("div");
-    pageEl.className = "pdf-page";
-    pageEl.dataset.page = String(n - 1); // 0-based
-    frag.appendChild(pageEl);
-    await renderPdfPage(pdf, n, pageEl, token);
-    if (token !== state.pdfRenderToken) return; // superseded (new doc / new zoom)
-  }
-  state.pdfRenderedScale = state.pdfScale;
-  els.pdfPages.replaceChildren(frag);
-  els.pdfPages.style.zoom = ""; // drop the live preview; pages are now crisp
-  applyPdfLayout();
-  updatePdfPageInfo();
-  renderHighlights();
-  buildPdfMinimap();
-  updateMinimapActive();
-}
-
-async function renderPdfPage(pdf, pageNum, pageEl, token) {
-  const page = await pdf.getPage(pageNum);
-  if (token !== state.pdfRenderToken) return;
-  const viewport = page.getViewport({ scale: state.pdfScale });
-  state.pdfPageViewports.set(pageNum - 1, { width: viewport.width, height: viewport.height });
-  pageEl.style.width = `${viewport.width}px`;
-  pageEl.style.height = `${viewport.height}px`;
-  // PDF.js 3.x positions text-layer divs with calc(var(--scale-factor) * …);
-  // without this variable those calcs collapse to 0 and text selection /
-  // highlight anchoring break. Keep it equal to the viewport scale.
-  pageEl.style.setProperty("--scale-factor", String(viewport.scale));
-
-  const canvas = document.createElement("canvas");
-  canvas.className = "pdf-canvas";
-  const ratio = window.devicePixelRatio || 1;
-  canvas.width = Math.floor(viewport.width * ratio);
-  canvas.height = Math.floor(viewport.height * ratio);
-  canvas.style.width = `${viewport.width}px`;
-  canvas.style.height = `${viewport.height}px`;
-  const ctx = canvas.getContext("2d");
-  ctx.scale(ratio, ratio);
-  pageEl.appendChild(canvas);
-
-  const textLayer = document.createElement("div");
-  textLayer.className = "textLayer";
-  pageEl.appendChild(textLayer);
-
-  const hlLayer = document.createElement("div");
-  hlLayer.className = "pdf-hl-layer";
-  pageEl.appendChild(hlLayer);
-
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  if (token !== state.pdfRenderToken) return;
-  try {
-    const textContent = await page.getTextContent();
-    if (token !== state.pdfRenderToken) return;
-    await window.pdfjsLib.renderTextLayer({
-      textContentSource: textContent,
-      container: textLayer,
-      viewport,
-      textDivs: [],
-    }).promise;
-  } catch (err) {
-    console.warn("Text layer failed to render", err);
-  }
-  drawHighlightsForPage(pageNum - 1);
+  schedulePdfPages(viewer);
 }
 
 function updatePdfPageInfo() {
@@ -4477,40 +4677,49 @@ function updatePdfPageInfo() {
 function setPdfScale(scale) {
   state.pdfScale = clamp(scale, 0.5, 3);
   localStorage.setItem("pdfScale", String(state.pdfScale));
-  rerenderPdf();
+  const rect = els.pdfViewport.getBoundingClientRect();
+  applyPdfZoomPreview(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  updatePdfPageInfo();
+  schedulePdfZoomRender();
 }
 
-// Rasterizing on every pinch tick would be janky, so the pinch zooms in real
-// time via a cheap CSS `zoom` on the page container (relative to the rasterized
-// scale) and only re-rasterizes to crisp pixels once the gesture settles.
+// Preview existing bitmaps during a gesture; sharpen nearby pages on settling.
 let pdfZoomRenderTimer = null;
 function schedulePdfZoomRender() {
   if (pdfZoomRenderTimer) clearTimeout(pdfZoomRenderTimer);
+  if (pdfViewer) {
+    for (const job of pdfViewer.jobs.values()) {
+      if (!job.thumbnail) cancelPdfJob(job);
+    }
+  }
   pdfZoomRenderTimer = setTimeout(() => {
     pdfZoomRenderTimer = null;
-    // The atomic swap in renderLoadedPdf keeps geometry identical (new pages are
-    // the same visual size as the CSS-zoomed preview), so the scroll position
-    // carries over untouched.
     rerenderPdf();
   }, 140);
 }
 
-// Apply the live CSS-zoom preview and keep the point under the cursor fixed.
+// Resize lightweight shells and transform their contents. Avoid CSS zoom:
+// its client-rectangle coordinates differ between browser implementations.
 function applyPdfZoomPreview(clientX, clientY) {
-  if (!els.pdfPages || !els.pdfViewport) return;
-  const z1 = state.pdfScale / (state.pdfRenderedScale || state.pdfScale);
+  const viewer = pdfViewer;
+  if (!viewer || !viewer.pages.length || !els.pdfViewport) return;
   const vp = els.pdfViewport;
-  const rect = vp.getBoundingClientRect();
-  const mx = clientX - rect.left;
-  const my = clientY - rect.top;
-  const z0raw = Number(els.pdfPages.style.zoom);
-  const z0 = z0raw > 0 ? z0raw : 1;
-  els.pdfPages.style.zoom = String(z1);
-  // Keep the content under the cursor anchored: scroll offsets live in the
-  // zoomed coordinate space, so rescale (offset + cursor) by z1/z0.
-  const r = z1 / z0;
-  vp.scrollLeft = (vp.scrollLeft + mx) * r - mx;
-  vp.scrollTop = (vp.scrollTop + my) * r - my;
+  const target = document.elementFromPoint(clientX, clientY)?.closest(".pdf-page");
+  const anchor = target || viewer.pages[viewer.active].el;
+  const before = anchor.getBoundingClientRect();
+  const x = (clientX - before.left) / before.width;
+  const y = (clientY - before.top) / before.height;
+  const ratio = state.pdfScale / state.pdfRenderedScale;
+  els.pdfPages.style.setProperty("--pdf-preview-scale", String(ratio));
+  for (const entry of viewer.pages) {
+    const size = state.pdfPageViewports.get(entry.index);
+    entry.el.style.width = `${size.width * ratio}px`;
+    entry.el.style.height = `${size.height * ratio}px`;
+  }
+  const after = anchor.getBoundingClientRect();
+  vp.scrollLeft += after.left + x * after.width - clientX;
+  vp.scrollTop += after.top + y * after.height - clientY;
+  renderHighlights();
 }
 
 // ── PDF pan (hand tool) ──────────────────────────────────────────────────────
@@ -4560,8 +4769,6 @@ function endPdfPan() {
 function handlePdfWheelZoom(event) {
   if (!event.ctrlKey) return;
   event.preventDefault();
-  // Cancel any in-flight re-raster so it can't swap in a stale scale mid-gesture.
-  state.pdfRenderToken += 1;
   const next = clamp(state.pdfScale * Math.exp(-event.deltaY * 0.01), 0.5, 3);
   if (next === state.pdfScale) return;
   state.pdfScale = next;
@@ -4594,9 +4801,7 @@ function togglePdfLayout() {
 }
 
 // ── Page minimap ──────────────────────────────────────────────────────────
-// A narrow column of page thumbnails for quick navigation. Thumbnails are
-// cheaply copied from each already-rendered page canvas via drawImage, so the
-// PDF is never re-rendered at a second scale.
+// Thumbnails have their own lazy, low-resolution renders and survive zooms.
 const MINIMAP_THUMB_WIDTH = 80;
 
 function applyMinimapVisibility() {
@@ -4618,36 +4823,42 @@ function toggleMinimap() {
 }
 
 function buildPdfMinimap() {
-  if (!els.pdfMinimap || !state.pdfDoc) return;
+  const viewer = pdfViewer;
+  if (!els.pdfMinimap || !viewer || !viewer.pages.length) return;
   applyMinimapVisibility();
   if (!state.pdfMinimapOpen) return; // skip the work while hidden
+  if (viewer.thumbObserver) return;
+  viewer.thumbObserver = new IntersectionObserver((entries) => {
+    if (pdfViewer !== viewer) return;
+    for (const entry of entries) {
+      const index = Number(entry.target.dataset.page);
+      if (entry.isIntersecting) viewer.thumbNear.add(index);
+      else viewer.thumbNear.delete(index);
+    }
+    schedulePdfPages(viewer);
+  }, { root: els.pdfMinimap, rootMargin: "200px" });
   const items = [];
-  els.pdfPages.querySelectorAll(".pdf-page").forEach((pageEl) => {
-    const page = pageEl.dataset.page; // 0-based (string)
-    const srcCanvas = pageEl.querySelector(".pdf-canvas");
-    if (!srcCanvas) return;
-
+  for (const entry of viewer.pages) {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "pdf-minimap-item";
-    item.dataset.page = page;
-
-    const thumb = document.createElement("canvas");
-    const scale = MINIMAP_THUMB_WIDTH / srcCanvas.width;
-    thumb.width = MINIMAP_THUMB_WIDTH;
-    thumb.height = Math.max(1, Math.round(srcCanvas.height * scale));
-    thumb.getContext("2d").drawImage(srcCanvas, 0, 0, thumb.width, thumb.height);
+    item.dataset.page = String(entry.index);
+    item.setAttribute("aria-label", `Page ${entry.index + 1}`);
+    const thumb = document.createElement("div");
+    const size = state.pdfPageViewports.get(entry.index);
+    thumb.className = "pdf-minimap-thumb";
+    thumb.style.aspectRatio = `${size.width} / ${size.height}`;
+    entry.thumb = thumb;
     item.appendChild(thumb);
-
     const num = document.createElement("span");
     num.className = "pdf-minimap-num";
-    num.textContent = String(Number(page) + 1);
+    num.textContent = String(entry.index + 1);
     item.appendChild(num);
-
-    item.addEventListener("click", () => scrollPageIntoView(Number(page)));
+    item.addEventListener("click", () => scrollPageIntoView(entry.index));
     items.push(item);
-  });
+  }
   els.pdfMinimap.replaceChildren(...items);
+  for (const item of items) viewer.thumbObserver.observe(item);
 }
 
 function scrollPageIntoView(page) {
@@ -4658,27 +4869,28 @@ function scrollPageIntoView(page) {
 
 // Highlight the minimap thumbnail for whichever page is most in view.
 function updateMinimapActive() {
-  if (!els.pdfMinimap || !state.pdfMinimapOpen || !els.pdfViewport) return;
-  const pages = els.pdfPages.querySelectorAll(".pdf-page");
-  if (!pages.length) return;
+  const viewer = pdfViewer;
+  if (!viewer || !els.pdfViewport || !viewer.visible.size) return;
   const vp = els.pdfViewport.getBoundingClientRect();
   const vpCenter = state.pdfHorizontal ? vp.left + vp.width / 2 : vp.top + vp.height / 2;
-  let best = null;
+  let best = viewer.active;
   let bestDist = Infinity;
-  pages.forEach((pageEl) => {
-    const r = pageEl.getBoundingClientRect();
+  for (const index of viewer.visible.keys()) {
+    const r = viewer.pages[index].el.getBoundingClientRect();
     const center = state.pdfHorizontal ? r.left + r.width / 2 : r.top + r.height / 2;
     const dist = Math.abs(center - vpCenter);
     if (dist < bestDist) {
       bestDist = dist;
-      best = pageEl.dataset.page;
+      best = index;
     }
-  });
-  els.pdfMinimap.querySelectorAll(".pdf-minimap-item").forEach((item) => {
-    const active = item.dataset.page === best;
-    item.classList.toggle("active", active);
-    if (active) item.scrollIntoView({ block: "nearest" });
-  });
+  }
+  viewer.active = best;
+  if (!els.pdfMinimap || !state.pdfMinimapOpen) return;
+  const item = els.pdfMinimap.children[best];
+  if (!item || item.classList.contains("active")) return;
+  els.pdfMinimap.querySelector(".active")?.classList.remove("active");
+  item.classList.add("active");
+  item.scrollIntoView({ block: "nearest" });
 }
 
 // ── Text selection → floating toolbar ────────────────────────────────────
