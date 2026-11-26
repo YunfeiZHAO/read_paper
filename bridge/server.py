@@ -97,6 +97,17 @@ def _bridge_env() -> Dict[str, str]:
     return env
 
 
+def _venv_system_prompt() -> str:
+    """Tell the model to use the bridge venv for all Python work and package installs."""
+    return (
+        "A Python virtual environment is active for your Bash tool at %s (VIRTUAL_ENV is set and "
+        "its bin/ is first on PATH, so `python`/`python3` resolve to it). Use it for all Python "
+        "work. pypdf and pymupdf (`import pymupdf`) are preinstalled for PDF text extraction. To add a "
+        "package, run `uv pip install <pkg>` (it installs into this venv); never use the system "
+        "Python, `pip install --user`, or `--break-system-packages`." % VENV_DIR
+    )
+
+
 def find_claude() -> Optional[str]:
     """Locate the `claude` binary. A LaunchAgent's PATH is minimal, so check common spots too."""
     override = os.environ.get("CLAUDE_BIN")
@@ -376,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
             cwd = str(Path.home())
 
         cmd = [claude_bin, "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]
+        if (VENV_DIR / "bin" / "python").exists():
+            cmd += ["--append-system-prompt", _venv_system_prompt()]
         if model:
             cmd += ["--model", model]
 
